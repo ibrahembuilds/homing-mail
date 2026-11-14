@@ -27,8 +27,16 @@
       <p class="muted" style="margin-top:10px">This link came from a test send, so nothing was changed. In the real campaign it unsubscribes the reader.</p>
     {% elif state == 'forbidden' %}
       <h1>Sign in required</h1>
-      <p class="muted" style="margin-top:10px">Sign in to the mail admin as an administrator, then open this page again.</p>
+      <p class="muted" style="margin-top:10px">Sign in with your email and password, then you come straight back here.</p>
       <p><a class="btn primary" href="/sso/login?url={{ prefix }}/">Sign in</a></p>
+    {% elif state == 'no_access' %}
+      <h1>No access yet</h1>
+      <p class="muted" style="margin-top:10px">You are signed in as <strong>{{ email }}</strong>, but this address is not on the {{ brand }} team. Ask an owner or admin to add you on the Team page.</p>
+      <p><a class="btn" href="/sso/logout">Sign in as someone else</a></p>
+    {% elif state == 'admins_only' %}
+      <h1>For admins only</h1>
+      <p class="muted" style="margin-top:10px">This page changes how the whole account works, so it is open to admins and owners. Ask one of them if something here needs changing.</p>
+      <p><a class="btn primary" href="{{ prefix }}/">Back to {{ brand }}</a></p>
     {% elif state == 'expired' %}
       <h1>Page expired</h1>
       <p class="muted" style="margin-top:10px">This form was open for too long. Go back, reload the page and try again.</p>

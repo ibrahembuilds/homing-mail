@@ -6,10 +6,17 @@
 
 set $campaigns campaigns:8080;
 
+# The mail server's user API is for Homing only (it reaches it inside Docker).
+# This route comes before the mail server's own /api route, so it wins.
+location ~ ^/api(/|$) {
+    return 404;
+}
+
 # Open pixel, click redirect, unsubscribe: reached from inside emails, no login.
 location ^~ /campaigns/t/ {
     include /etc/nginx/proxy.conf;
     proxy_set_header X-Proxy-Auth "";
+    proxy_set_header X-Auth-User "";
     proxy_pass http://$campaigns;
 }
 
@@ -17,6 +24,7 @@ location ^~ /campaigns/t/ {
 location ^~ /campaigns/api/ {
     include /etc/nginx/proxy.conf;
     proxy_set_header X-Proxy-Auth "";
+    proxy_set_header X-Auth-User "";
     client_max_body_size 45m;
     proxy_pass http://$campaigns;
 }
@@ -26,6 +34,7 @@ location ^~ /campaigns/api/ {
 location ^~ /campaigns/static/ {
     include /etc/nginx/proxy.conf;
     proxy_set_header X-Proxy-Auth "";
+    proxy_set_header X-Auth-User "";
     expires 1y;
     add_header Cache-Control "public, immutable";
     gzip on;
@@ -36,6 +45,7 @@ location ^~ /campaigns/static/ {
 location = /campaigns/health {
     access_log off;
     proxy_set_header X-Proxy-Auth "";
+    proxy_set_header X-Auth-User "";
     proxy_pass http://$campaigns;
 }
 
@@ -43,12 +53,15 @@ location = /campaigns {
     return 301 /campaigns/;
 }
 
-# Everything else is the operator interface: global administrators only.
+# Everything else is the operator interface. The mail server checks the
+# sign-in; Homing then checks the person is on its team and what they may do.
 location ^~ /campaigns/ {
-    auth_request /internal/auth/admin;
+    auth_request /internal/auth/user;
+    auth_request_set $homing_user $upstream_http_x_user;
     error_page 403 @sso_login;
     include /etc/nginx/proxy.conf;
     proxy_set_header X-Proxy-Auth "__PROXY_SECRET__";
+    proxy_set_header X-Auth-User $homing_user;
     proxy_read_timeout 320s;
     client_max_body_size 70m;
     gzip on;

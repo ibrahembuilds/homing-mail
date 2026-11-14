@@ -9,11 +9,30 @@
   Upload leads, let AI write each email, follow up automatically, and answer every reply from one inbox.
 </p>
 
+<p align="center">
+  <a href="media/homing-explainer.mp4"><img src="media/homing-explainer-poster.jpg" width="720" alt="Watch the 1-minute tour of Homing"></a>
+</p>
+
 ---
 
 Named after homing pigeons: your emails go out, the replies find their way
 back. Everything runs on one server you own. Your contacts, your mail and
 your API keys never leave it.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A["Upload leads<br/>CSV or Excel"] --> B["Check every address<br/>typos, dead mailboxes"]
+    B --> C["AI writes a personal<br/>first line per lead"]
+    C --> D["Send safely<br/>limits, warm-up, A/B subject"]
+    D --> E["Follow-ups<br/>same thread"]
+    E -- "no reply yet" --> E
+    E -- "they reply" --> F["Inbox<br/>AI sorts it and drafts an answer"]
+    F --> G["Meeting booked"]
+    D -.-> H[("Analytics<br/>opens, clicks, replies, funnel")]
+    F -.-> H
+```
 
 ## Features
 
@@ -37,6 +56,15 @@ your API keys never leave it.
 **You need:** a Linux VPS with 2 GB RAM or more, a domain, and outgoing
 port 25 open. Many providers block port 25 on new servers; ask their support
 to open it first.
+
+```mermaid
+flowchart LR
+    A["1. DNS A record<br/>mail.yourdomain.com"] --> B["2. Install Docker"]
+    B --> C["3. sudo ./install.sh"]
+    C --> D["4. Add the DNS records<br/>it prints"]
+    D --> E["5. Open the site<br/>and sign in"]
+    E --> F["6. Add your team"]
+```
 
 **1. Point your domain at the server.** Add a DNS `A` record:
 `mail.yourdomain.com` → your server's IP address.
@@ -62,22 +90,62 @@ everything and prints:
 - your sending address (`hello@yourdomain.com`),
 - the DNS records to add.
 
+Already running Coolify on the server? The installer notices and plugs into
+Coolify's proxy instead of taking ports 80 and 443: Coolify serves the website
+and its certificate, and Homing opens only the mail ports (25, 465, 587, 993).
+Your other apps are not touched. Point `mail.yourdomain.com` at the server
+before you install; if it does not resolve yet, the installer keeps the website
+off (an early certificate request would fail and Let's Encrypt locks the name
+for an hour after five failures) and tells you to run it again once it does.
+
 **4. Add the DNS records** it printed at your domain registrar. Or open
-**Campaigns → Your domain**, paste a Cloudflare token, and it adds them for you.
+**Homing → Domain & DNS**, paste a Cloudflare token, and it adds them for you.
 Then set the reverse DNS (PTR) of your server's IP to `mail.yourdomain.com`
 in your VPS provider's panel.
 
-**5. Open `https://mail.yourdomain.com/campaigns/`**, sign in as
-`admin@yourdomain.com`, and in **Settings** add your postal address and an AI
-key (OpenRouter or Anthropic). Turn on warm-up before your first large send.
+**5. Open `https://mail.yourdomain.com/`**, sign in as `admin@yourdomain.com`
+(the owner), and in **Settings** add your postal address and an AI key
+(OpenRouter or Anthropic). Turn on warm-up before your first large send.
+
+**6. Add your team** under **Homing → Team**. Each person gets their own
+sign-in (a mailbox on your server, created for them) and one of three roles:
+
+| Role | Can |
+|---|---|
+| Member | Leads, campaigns, inbox, calendar, AI agent, analytics |
+| Admin | Also settings, domain, sending accounts, API keys, and adding members |
+| Owner | Everything, including adding and removing admins and owners |
 
 That's it.
 
 | Address | What it is |
 |---|---|
-| `https://mail.yourdomain.com/campaigns/` | Homing: leads, campaigns, inbox, analytics, AI agent |
+| `https://mail.yourdomain.com/` | Homing: leads, campaigns, inbox, analytics, AI agent, team |
 | `https://mail.yourdomain.com/admin` | Mail admin: domains and mailboxes |
 | `https://mail.yourdomain.com/webmail` | Webmail |
+
+### What runs on your server
+
+```mermaid
+flowchart TB
+    you(["You and your team<br/>in the browser"]) -- "HTTPS 443" --> front
+    world(["Your leads' mail servers"]) <-- "SMTP 25" --> front
+    subgraph server["Your server (docker compose)"]
+        front["front<br/>web proxy, TLS certificates"]
+        front --> campaigns["campaigns<br/>Homing web app"]
+        front --> admin["admin<br/>domains and mailboxes"]
+        front --> webmail["webmail"]
+        front --> smtp["smtp<br/>sends and receives mail"]
+        front --> imap["imap<br/>mailboxes"]
+        worker["campaigns-worker<br/>sends, follows up, reads replies"] --> smtp
+        worker --> imap
+        smtp --> antispam["antispam<br/>spam filter, DKIM signing"]
+        campaigns --- db[("SQLite<br/>deploy/data/campaigns")]
+        worker --- db
+        admin --- redis[("Redis")]
+    end
+    worker -. "optional" .-> ai(["AI provider<br/>OpenRouter or Anthropic"])
+```
 
 ### Day to day
 

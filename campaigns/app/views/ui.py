@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import flask
 
 from .. import (agent, bounces, contacts, dnscheck, leadtools, mailboxes, planner, security, sender, service, stats,
-                writer)
+                team, writer)
 from ..ai_common import ProviderError
 from ..config import DEFAULT_SETTINGS, SECRET_SETTINGS
 from ..db import loads, now
@@ -33,23 +33,36 @@ def _cfg():
 
 
 # -- authentication and CSRF -----------------------------------------------------
-def _authenticated():
-    cfg = _cfg()
+def current_user():
+    """The team member making this request, or None.
+
+    Behind the mail server's web proxy, the proxy has checked the sign-in and
+    says who it is (X-Auth-User), proven by the shared secret. Without it,
+    the signed session cookie carries the email and a per-person epoch that
+    signing out changes, so old copies of the cookie stop working.
+    """
+    if 'user' in flask.g:
+        return flask.g.user
+    cfg, db = _cfg(), _db()
+    user = None
+    flask.g.denied = ''
     if cfg.AUTH_MODE == 'proxy':
         supplied = flask.request.headers.get('X-Proxy-Auth', '')
-        return bool(cfg.PROXY_SECRET) and hmac.compare_digest(supplied.encode(), cfg.PROXY_SECRET.encode())
-    return flask.session.get('auth') is True and flask.session.get('epoch') == _session_epoch()
-
-
-def _session_epoch():
-    """Sessions live in the signed cookie, so logging out changes this value to
-    end every copy of the old cookie as well."""
-    db = _db()
-    epoch = db.state('session_epoch')
-    if not epoch:
-        epoch = secrets.token_urlsafe(12)
-        db.set_state('session_epoch', epoch)
-    return epoch
+        if cfg.PROXY_SECRET and hmac.compare_digest(supplied.encode(), cfg.PROXY_SECRET.encode()):
+            email = flask.request.headers.get('X-Auth-User', '').strip().lower()
+            # Proxies set up before team accounts existed let only administrators through.
+            user = team.get(db, email or cfg.OWNER_EMAIL)
+            if user is None or user['disabled']:
+                flask.g.denied, user = email, None
+    else:
+        row = team.get(db, flask.session.get('user', ''))
+        if row is not None and not row['disabled'] and row['session_epoch'] \
+                and hmac.compare_digest(str(flask.session.get('epoch', '')), row['session_epoch']):
+            user = row
+    if user is not None:
+        team.seen(db, user)
+    flask.g.user = user
+    return user
 
 
 def csrf_token():
@@ -62,10 +75,14 @@ def csrf_token():
 def guard():
     if flask.request.endpoint == 'ui.login':
         pass
-    elif not _authenticated():
+    elif current_user() is None:
         if _cfg().AUTH_MODE == 'proxy':
+            if flask.g.denied:
+                return flask.render_template('public.html', state='no_access', email=flask.g.denied), 403
             return flask.render_template('public.html', state='forbidden'), 403
         return flask.redirect(flask.url_for('ui.login'))
+    elif not team.may(current_user()['role'], flask.request.endpoint, flask.request.method):
+        return flask.render_template('public.html', state='admins_only', email=current_user()['email']), 403
     if flask.request.method == 'POST':
         supplied = flask.request.form.get('csrf') or flask.request.headers.get('X-CSRF-Token', '')
         expected = flask.session.get('csrf', '')
@@ -77,8 +94,10 @@ def guard():
 def inject():
     db = _db()
     pending = service.pending_approvals(db)
+    me = current_user()
     return {'csrf_token': csrf_token, 'pending_count': len(pending['campaigns']) + len(pending['messages']),
-            'password_auth': _cfg().AUTH_MODE != 'proxy',
+            'password_auth': _cfg().AUTH_MODE != 'proxy', 'me': me,
+            'is_admin': bool(me and me['role'] in ('owner', 'admin')),
             'inbox_unread': db.val('SELECT COUNT(*) FROM replies WHERE read_at IS NULL AND is_auto = 0', default=0),
             'tasks_due': db.val('SELECT COUNT(*) FROM tasks WHERE done_at IS NULL AND due_at <= ?',
                                 planner.end_of_today(db.settings()), default=0)}
@@ -107,30 +126,47 @@ def login():
     if cfg.AUTH_MODE == 'proxy':
         return flask.redirect(flask.url_for('ui.home'))
     error = None
+    db = _db()
+    email = ''
     if flask.request.method == 'POST':
         ip = flask.request.remote_addr or ''
         recent = [t for t in _login_failures[ip] if time.time() - t < 900]
         _login_failures[ip] = recent
         supplied = flask.request.form.get('password', '')
+        email = flask.request.form.get('email', '').strip().lower()
+        row = team.get(db, email) if email else None
+        owner = team.get(db, cfg.OWNER_EMAIL)
+        signed_in = None
         if len(recent) >= 10:
             error = 'Too many attempts. Try again in 15 minutes.'
-        elif cfg.ADMIN_PASSWORD and hmac.compare_digest(supplied.encode(), cfg.ADMIN_PASSWORD.encode()):
+        elif row is not None and not row['disabled'] and team.check_password(row, supplied):
+            signed_in = row
+        elif (not email or (owner is not None and email in (owner['email'], 'admin'))) and owner is not None \
+                and cfg.ADMIN_PASSWORD and hmac.compare_digest(supplied.encode(), cfg.ADMIN_PASSWORD.encode()):
+            signed_in = owner   # the installation's owner password always works for the first owner
+        else:
+            recent.append(time.time())
+            error = 'Wrong email or password.'
+        if signed_in is not None:
             flask.session.clear()
-            flask.session['auth'] = True
-            flask.session['epoch'] = _session_epoch()
+            flask.session['user'] = signed_in['email']
+            flask.session['epoch'] = signed_in['session_epoch']
             flask.session.permanent = True
             csrf_token()
             return flask.redirect(flask.url_for('ui.home'))
-        else:
-            recent.append(time.time())
-            error = 'Wrong password.'
-    return flask.render_template('login.html', error=error, configured=bool(cfg.ADMIN_PASSWORD))
+    return flask.render_template('login.html', error=error, email=email, owner_email=cfg.OWNER_EMAIL,
+                                 configured=bool(cfg.ADMIN_PASSWORD) or bool(db.val(
+                                     'SELECT COUNT(*) FROM team WHERE password_hash IS NOT NULL', default=0)))
 
 
 @bp.route('/logout', methods=['POST'])
 def logout():
-    if _cfg().AUTH_MODE != 'proxy':
-        _db().set_state('session_epoch', secrets.token_urlsafe(12))
+    me = current_user()
+    if _cfg().AUTH_MODE == 'proxy':
+        flask.session.clear()
+        return flask.redirect('/sso/logout')   # the mail server's sign-out ends the shared sign-in
+    if me is not None:
+        team.end_sessions(_db(), me['email'])   # every copy of this person's cookie stops working
     flask.session.clear()
     return flask.redirect(flask.url_for('ui.login'))
 

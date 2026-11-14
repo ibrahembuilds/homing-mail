@@ -549,7 +549,7 @@ def test_old_database_is_upgraded_in_place(tmp_path):
     db = DB(path)
     db.init()
     db.init()
-    assert db.val('PRAGMA user_version') == 5
+    assert db.val('PRAGMA user_version') == len(__import__('app.db', fromlist=['MIGRATIONS']).MIGRATIONS)
     assert dict(db.one('SELECT lead_status, verify_status FROM contacts')) == {'lead_status': 'new', 'verify_status': ''}
     assert db.val('SELECT COUNT(*) FROM mailboxes') == 0
     assert db.val('SELECT COUNT(*) FROM placement_tests') == 0 and db.val('SELECT COUNT(*) FROM news_cache') == 0

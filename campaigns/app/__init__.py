@@ -60,8 +60,10 @@ def create_app(cfg=None):
     app.cfg = cfg
     app.db = DB(cfg.DB_PATH)
     app.db.init(seed=cfg.SEED)
+    from . import team
+    team.ensure_owner(app.db, cfg.OWNER_EMAIL)
 
-    from .views import api, public, ui, ui_accounts, ui_outreach  # noqa: F401  (these add pages to ui.bp)
+    from .views import api, public, ui, ui_accounts, ui_outreach, ui_team  # noqa: F401  (these add pages to ui.bp)
     app.register_blueprint(ui.bp, url_prefix=prefix)
     app.register_blueprint(public.bp, url_prefix=prefix + '/t')
     app.register_blueprint(api.bp, url_prefix=prefix + '/api')

@@ -35,10 +35,17 @@ class Config:
         self.AUTH_MODE = e.get('CAMPAIGNS_AUTH', 'password')
         self.PROXY_SECRET = e.get('CAMPAIGNS_PROXY_SECRET', '')
         self.ADMIN_PASSWORD = e.get('CAMPAIGNS_ADMIN_PASSWORD', '')
+        # The first owner: the mail server's first administrator, or "admin".
+        initial = (f"{e.get('INITIAL_ADMIN_ACCOUNT', '')}@{e.get('INITIAL_ADMIN_DOMAIN', '')}"
+                   if e.get('INITIAL_ADMIN_ACCOUNT') and e.get('INITIAL_ADMIN_DOMAIN') else '')
+        self.OWNER_EMAIL = (e.get('CAMPAIGNS_OWNER') or initial or 'admin').strip().lower()
         self.WEB_ADMIN = e.get('WEB_ADMIN', '/admin')
         self.WEB_WEBMAIL = e.get('WEB_WEBMAIL', '/webmail')
         # Running next to the bundled mail server (links to its admin and webmail).
         self.MAIL_SERVER = _bool(e.get('CAMPAIGNS_MAIL_SERVER'), bool(hostname))
+        # The mail server's user API, used to create mailboxes for new team members.
+        self.MAIL_API_URL = e.get('CAMPAIGNS_MAIL_API', 'http://admin:8080/api/v1')
+        self.MAIL_API_TOKEN = e.get('API_TOKEN', '') if _bool(e.get('API'), False) else ''
         # Mail plumbing defaults (service names on the compose network).
         self.SMTP_HOST = e.get('CAMPAIGNS_SMTP_HOST', 'smtp')
         self.SMTP_PORT = int(e.get('CAMPAIGNS_SMTP_PORT', '25'))

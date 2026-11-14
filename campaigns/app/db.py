@@ -362,6 +362,20 @@ MIGRATIONS = [
     ALTER TABLE campaigns ADD COLUMN skip_risky INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE messages ADD COLUMN variant TEXT NOT NULL DEFAULT ''
     """,
+    # 6: team: who can sign in, and with which role
+    """
+    CREATE TABLE team (
+        email TEXT PRIMARY KEY COLLATE NOCASE,
+        name TEXT NOT NULL DEFAULT '',
+        role TEXT NOT NULL DEFAULT 'member',
+        password_hash TEXT,
+        session_epoch TEXT NOT NULL DEFAULT '',
+        disabled INTEGER NOT NULL DEFAULT 0,
+        added_by TEXT NOT NULL DEFAULT '',
+        created_at REAL NOT NULL,
+        last_seen_at REAL
+    )
+    """,
 ]
 
 # What the columns above hold:
@@ -385,6 +399,8 @@ MIGRATIONS = [
 #                          waits ab_wait_hours after the test group is out, then gets ab_winner (a | b)
 #   messages.variant       '' (no test) | a | b (test group) | rest (waits for the winner)
 #   campaigns.skip_risky   also leave out system mailboxes and likely typos
+#   team.role              owner | admin | member (see team.py); password_hash is only used without
+#                          a mail server; session_epoch changes to sign someone out everywhere
 
 
 class DB:

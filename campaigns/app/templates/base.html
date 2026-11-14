@@ -64,20 +64,21 @@
       {{ nav('ui.analytics', 'chart', 'Analytics', ('analytics', 'emails')) }}
     </nav>
     <nav class="nav-group setup" aria-label="Setup">
-      {{ nav('ui.accounts', 'mail', 'Email accounts', ('accounts',)) }}
+      {% if is_admin %}{{ nav('ui.accounts', 'mail', 'Email accounts', ('accounts',)) }}{% endif %}
       {{ nav('ui.health_page', 'pulse', 'Sending health', ('health',)) }}
+      {% if is_admin %}
       {{ nav('ui.domains', 'globe', 'Domain & DNS', ('domains',)) }}
+      {{ nav('ui.team', 'users', 'Team', ('team',)) }}
       {{ nav('ui.settings', 'gear', 'Settings', ('settings',)) }}
+      {% endif %}
       {% if cfg.MAIL_SERVER %}
       <a class="nav" href="{{ cfg.WEB_ADMIN }}" title="Mail admin"><svg aria-hidden="true"><use href="#i-server"/></svg><span class="nav-label">Mail admin</span></a>
       <a class="nav" href="{{ cfg.WEB_WEBMAIL }}" title="Webmail"><svg aria-hidden="true"><use href="#i-mail"/></svg><span class="nav-label">Webmail</span></a>
       {% endif %}
     </nav>
     <div class="foot">
-      <span class="mono">v{{ app_version }}</span>
-      {% if password_auth %}
+      {% if me %}<span class="me nav-label" title="{{ me.email }} · {{ me.role }}">{{ me.name or me.email }}<span class="role">{{ me.role }} · v{{ app_version }}</span></span>{% else %}<span class="mono">v{{ app_version }}</span>{% endif %}
       <form method="post" action="{{ url_for('ui.logout') }}"><input type="hidden" name="csrf" value="{{ csrf_token() }}"><button title="Sign out"><svg class="i" aria-hidden="true"><use href="#i-logout"/></svg><span class="nav-label">Sign out</span></button></form>
-      {% endif %}
     </div>
   </aside>
   <main class="main">

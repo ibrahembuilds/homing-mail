@@ -1,0 +1,54 @@
+# Added to docker-compose.yml on servers where Coolify (Traefik) already serves
+# ports 80 and 443. install.sh turns it on by itself when it finds Coolify.
+#
+# Coolify's Traefik serves https://MAIL_HOST and gets its certificate; the
+# mail server keeps only the mail ports. The certificate dumper copies that
+# certificate to the mail server, which needs it for IMAP and SMTP.
+
+services:
+  front:
+    ports: !override
+      - "25:25"
+      - "465:465"
+      - "587:587"
+      - "993:993"
+      - "4190:4190"
+    networks:
+      - default
+      - webmail
+      - proxy
+    labels:
+      # install.sh sets PROXY_ROUTE=false while MAIL_HOST does not resolve yet:
+      # every early certificate request fails, and five failures make Let's
+      # Encrypt refuse that name for an hour.
+      traefik.enable: ${PROXY_ROUTE:-true}
+      traefik.docker.network: ${PROXY_NETWORK:-coolify}
+      traefik.http.middlewares.homing-https.redirectscheme.scheme: https
+      traefik.http.routers.homing-http.entrypoints: http
+      traefik.http.routers.homing-http.rule: Host(`${MAIL_HOST}`)
+      traefik.http.routers.homing-http.middlewares: homing-https
+      traefik.http.routers.homing.entrypoints: https
+      traefik.http.routers.homing.rule: Host(`${MAIL_HOST}`)
+      traefik.http.routers.homing.tls: "true"
+      traefik.http.routers.homing.tls.certresolver: letsencrypt
+      traefik.http.services.homing.loadbalancer.server.port: "80"
+
+  certdumper:
+    image: ${MAIL_IMAGES:-ghcr.io/mailu}/traefik-certdumper:${MAIL_VERSION:-2024.06}
+    restart: always
+    environment:
+      DOMAIN: ${MAIL_HOST}
+      TRAEFIK_VERSION: v2
+    volumes:
+      - "${PROXY_ACME_DIR:-/data/coolify/proxy}:/traefik:ro"
+      - "./data/certs:/output"
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+networks:
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:-coolify}

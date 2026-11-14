@@ -8,6 +8,8 @@
 #
 #   --config-only   write the configuration files and stop (nothing is started)
 #   --yes           do not ask questions; use the environment and defaults
+#   --proxy=coolify run behind Coolify's web proxy (found automatically when
+#                   Coolify is installed); --proxy=none takes ports 80 and 443
 #
 # Running it again on an existing installation keeps every secret and
 # setting in homing.env, rebuilds the campaign service and restarts.
@@ -17,10 +19,12 @@ cd "$(dirname "$0")"
 
 CONFIG_ONLY=0
 ASSUME_YES=0
+PROXY_MODE=${PROXY_MODE:-auto}
 for arg in "$@"; do
   case "$arg" in
     --config-only) CONFIG_ONLY=1 ;;
     --yes|-y) ASSUME_YES=1 ;;
+    --proxy=*) PROXY_MODE=${arg#--proxy=} ;;
     -h|--help) sed -n '2,14p' "$SELF"; exit 0 ;;
     *) echo "Unknown option: $arg" >&2; exit 2 ;;
   esac
@@ -41,6 +45,13 @@ ask() {  # ask VAR "Question" "default"
 }
 
 setting() { grep -E "^$1=" homing.env | head -n1 | cut -d= -f2-; }
+set_setting() {  # set_setting KEY VALUE: replace the line, or add it
+  if grep -qE "^$1=" homing.env; then
+    sed -i "s|^$1=.*|$1=$2|" homing.env
+  else
+    printf '%s=%s\n' "$1" "$2" >> homing.env
+  fi
+}
 
 # --------------------------------------------------------------- preconditions
 if [ "$CONFIG_ONLY" = 0 ]; then
@@ -63,6 +74,11 @@ if [ -f homing.env ]; then
   if ! grep -q '^PUBLIC_IP=' homing.env; then   # added in a later version
     printf '\n# Public address of this server (shown on the domain setup page)\nPUBLIC_IP=%s\n' \
       "$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -n1)" >> homing.env
+  fi
+  if [ -z "$(setting API_TOKEN)" ]; then   # team accounts arrived in a later version
+    set_setting API true
+    set_setting API_TOKEN "$(rand 24)"
+    note "Turned on the mail server's user API for team accounts."
   fi
   ADMIN_PASSWORD=""
   FRESH=0
@@ -109,12 +125,52 @@ else
       -e "s|__HELLO_PASSWORD__|$HELLO_PASSWORD|g" \
       -e "s|__PUBLIC_IP__|$PUBLIC_IP|g" \
       -e "s|__ADMIN_PASSWORD__|$ADMIN_PASSWORD|g" \
+      -e "s|__API_TOKEN__|$(rand 24)|g" \
       homing.env.template > homing.env
-  printf 'COMPOSE_PROJECT_NAME=%s\n' "$PROJECT" > .env
   umask 022
   FRESH=1
   note "Wrote homing.env (readable by root only)."
 fi
+
+# ------------------------------------------------- web proxy: own, or Coolify's
+# On a server where Coolify already serves ports 80 and 443, Homing joins
+# Coolify's network instead: Coolify's Traefik handles the website and its
+# certificate, and Homing opens only the mail ports.
+if [ "$PROXY_MODE" = auto ]; then
+  PROXY_MODE=none
+  if [ "$CONFIG_ONLY" = 0 ] && docker network inspect coolify >/dev/null 2>&1 \
+     && docker ps --format '{{.Names}}' | grep -qx coolify-proxy; then
+    PROXY_MODE=coolify
+  fi
+fi
+case "$PROXY_MODE" in
+  coolify)
+    if [ -z "${PROXY_SUBNETS:-}" ] && command -v docker >/dev/null 2>&1; then
+      PROXY_SUBNETS=$(docker network inspect coolify -f '{{range .IPAM.Config}}{{.Subnet}},{{end}}' 2>/dev/null | sed 's/,$//' || true)
+    fi
+    if [ -z "${PROXY_SUBNETS:-}" ]; then
+      [ "$CONFIG_ONLY" = 1 ] || die "Coolify's network was not found. Is Coolify running?"
+      warn "Coolify's network address is unknown here; run ./install.sh on the server to fill it in."
+    fi
+    [ -f /data/coolify/proxy/acme.json ] || warn "Coolify's certificate store (/data/coolify/proxy/acme.json) was not found."
+    set_setting TLS_FLAVOR mail
+    set_setting REAL_IP_HEADER X-Forwarded-For
+    set_setting REAL_IP_FROM "$PROXY_SUBNETS"
+    note "Running behind Coolify: its proxy serves https://$MAIL_HOST; Homing opens only the mail ports."
+    COMPOSE_FILES=docker-compose.yml:docker-compose.coolify.yml ;;
+  none)
+    COMPOSE_FILES=docker-compose.yml ;;
+  *) die "Unknown --proxy value \"$PROXY_MODE\" (use coolify or none)." ;;
+esac
+PROJECT=$(setting COMPOSE_PROJECT_NAME)
+umask 077
+{
+  printf 'COMPOSE_PROJECT_NAME=%s\n' "${PROJECT:-homing}"
+  printf 'COMPOSE_FILE=%s\n' "$COMPOSE_FILES"
+  printf 'MAIL_HOST=%s\n' "$MAIL_HOST"
+  printf 'PROXY_NETWORK=coolify\nPROXY_ACME_DIR=/data/coolify/proxy\n'
+} > .env
+umask 022
 
 # Proxy routes and webmail name are regenerated on every run.
 mkdir -p overrides/nginx overrides/roundcube overrides/postfix overrides/dovecot overrides/rspamd
@@ -146,6 +202,13 @@ if command -v getent >/dev/null 2>&1; then
   if [ -z "$RESOLVED" ]; then
     warn "$MAIL_HOST does not resolve yet. Add an A record for it pointing at this server;"
     warn "the TLS certificate cannot be issued until it does."
+    if [ "$PROXY_MODE" = coolify ]; then
+      # Requests made before the name works all fail, and after five failures
+      # Let's Encrypt refuses the name for an hour. Keep Coolify from asking.
+      printf 'PROXY_ROUTE=false\n' >> .env
+      warn "Coolify will not serve https://$MAIL_HOST yet. Once the A record works, run ./install.sh"
+      warn "again: it turns the website on and Coolify gets the certificate."
+    fi
   elif [ -n "$LOCAL_IP" ] && [ "$RESOLVED" != "$LOCAL_IP" ]; then
     note "$MAIL_HOST resolves to $RESOLVED (this machine's address is $LOCAL_IP; fine if that is your public IP)."
   else
@@ -158,12 +221,26 @@ else
   warn "Outgoing port 25 looks blocked. Many VPS providers block it by default: ask their"
   warn "support to open it, otherwise no email can be delivered to other providers."
 fi
-for port in 25 80 443; do
+WEB_PORTS="80 443"
+[ "$PROXY_MODE" = coolify ] && WEB_PORTS=""
+for port in 25 465 587 993 $WEB_PORTS; do
   if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$port\$"; then
     docker compose ps -q front >/dev/null 2>&1 && [ -n "$(docker compose ps -q front 2>/dev/null)" ] \
       || warn "Port $port is already in use by another program. Stop it (for example a web server or postfix) first."
   fi
 done
+
+# Behind Coolify the real certificate arrives only after the DNS name works,
+# and Coolify does not send visitors to a container that is not healthy yet.
+# A temporary certificate lets everything start; the real one replaces it.
+if [ "$PROXY_MODE" = coolify ] && [ ! -s data/certs/cert.pem ]; then
+  mkdir -p data/certs
+  if openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=$MAIL_HOST"        -keyout data/certs/key.pem -out data/certs/cert.pem >/dev/null 2>&1; then
+    note "Temporary certificate in place until Coolify gets the real one for $MAIL_HOST."
+  else
+    warn "Could not make a temporary certificate (is openssl installed?). Mail ports start once the real one arrives."
+  fi
+fi
 
 # -------------------------------------------------------------------- start
 say "Building and starting (the first run downloads about 1.5 GB)"
@@ -202,9 +279,10 @@ DKIM_RECORD=$(docker compose exec -T admin flask mailu config-export --dns domai
 
 # --------------------------------------------------------------------- done
 say "Installed"
-note "Mail admin:  https://$MAIL_HOST/admin      sign in as admin@$DOMAIN"
+note "Homing:      https://$MAIL_HOST/            sign in as admin@$DOMAIN (the owner)"
 if [ "$FRESH" = 1 ]; then note "Password:    $ADMIN_PASSWORD    (change it after signing in)"; fi
-note "Campaigns:   https://$MAIL_HOST/campaigns/"
+note "Team:        add people in Homing > Team; each gets their own sign-in"
+note "Mail admin:  https://$MAIL_HOST/admin"
 if [ "$FRESH" = 1 ] && [ -n "$HELLO_PASSWORD" ]; then
   note "Sending address: hello@$DOMAIN  (webmail password: $HELLO_PASSWORD)"
 fi
@@ -223,7 +301,7 @@ fi
 note "And at your VPS provider: set the reverse DNS (PTR) of the server's IP to $MAIL_HOST"
 
 say "Then"
-note "1. Open Campaigns > Domain check and run it until every row is OK."
-note "2. Campaigns > Settings: set the sender address and postal address, add your AI key."
+note "1. Open Homing > Domain & DNS and fix rows until every one is OK."
+note "2. Homing > Settings: set the sender address and postal address, add your AI key."
 note "3. Turn on warm-up in Settings before your first large campaign."
 note "Day to day: ./manage.sh status | logs | update | backup  (./manage.sh help)"

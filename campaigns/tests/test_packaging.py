@@ -25,7 +25,8 @@ for url in ('/campaigns/', campaign, '/campaigns/analytics', '/campaigns/sending
     assert client.get(url, follow_redirects=True).status_code == 200, url
 page = client.get(campaign).text
 assert 'data-sequence' in page and 'Test a second subject line' in page and 'v' + __version__ in page
-assert wsgi.app.db.val('PRAGMA user_version') == 5
+from app.db import MIGRATIONS
+assert wsgi.app.db.val('PRAGMA user_version') == len(MIGRATIONS)
 print('image ok')
 '''
 

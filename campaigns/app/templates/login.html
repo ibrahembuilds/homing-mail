@@ -28,8 +28,10 @@
     {% if error %}<div class="flash error" style="text-align:left">{{ error }}</div>{% endif %}
     <form method="post">
       <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-      <div class="field"><label for="password">Password</label><input id="password" type="password" name="password" autofocus required></div>
+      <div class="field"><label for="email">Email</label><input id="email" type="text" name="email" value="{{ email }}" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="{{ owner_email }}" {{ 'autofocus' if not email }}></div>
+      <div class="field"><label for="password">Password</label><input id="password" type="password" name="password" autocomplete="current-password" {{ 'autofocus' if email }} required></div>
       <button class="btn primary" style="width:100%;justify-content:center">Sign in</button>
+      <p class="hint" style="margin:12px 0 0;text-align:left">Owner of this installation: use <code>{{ owner_email }}</code> and the password set at install.</p>
     </form>
   </div>
 </div>

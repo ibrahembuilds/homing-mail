@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Team{% endblock %}
+{% block body %}
+<div class="head">
+  <div><div class="eyebrow">Setup</div><h1>Team</h1>
+    <div class="sub">Who can sign in to {{ brand }}. Members do the daily work; admins also change settings; owners also manage the team.</div></div>
+</div>
+
+{% if login %}
+<div class="notice ok" role="status">
+  <h3>Sign-in details for {{ login.email }}</h3>
+  {% if login.password %}
+  <p class="small" style="margin:4px 0 10px">Send these to them privately. The password is shown only now.</p>
+  <div class="row" style="grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr)">
+    <div><div class="eyebrow">Address</div><div class="copyable"><code id="cred-url">{{ login.url }}</code><button class="btn small" type="button" data-copy="#cred-url">Copy</button></div></div>
+    <div><div class="eyebrow">Email</div><div class="copyable"><code id="cred-email">{{ login.email }}</code><button class="btn small" type="button" data-copy="#cred-email">Copy</button></div></div>
+    <div><div class="eyebrow">Password</div><div class="copyable"><code id="cred-pw">{{ login.password }}</code><button class="btn small" type="button" data-copy="#cred-pw">Copy</button></div></div>
+  </div>
+  {% else %}
+  <p class="small" style="margin:4px 0 0">They sign in at <code>{{ login.url }}</code>.</p>
+  {% endif %}
+  {% if login.note %}<p class="small" style="margin:8px 0 0">{{ login.note }}</p>{% endif %}
+</div>
+{% endif %}
+
+<section class="card flush">
+  <div class="card-head"><h2>People</h2><span class="muted small num">{{ people|length }}</span></div>
+  <div class="table-wrap"><table class="hover">
+    <thead><tr><th>Person</th><th>Role</th><th>Last active</th><th>Added</th><th></th></tr></thead>
+    <tbody>
+    {% for p in people %}
+    <tr>
+      <td><strong>{{ p.name or p.email }}</strong>{% if p.email == me.email %} <span class="badge plain">you</span>{% endif %}
+        {% if p.name %}<div class="muted tiny mono">{{ p.email }}</div>{% endif %}</td>
+      <td>
+        {% set can_change = p.email != me.email and (me.role == 'owner' or p.role != 'owner') %}
+        {% if can_change %}
+        <form method="post" action="{{ url_for('ui.team_update', email=p.email) }}" class="actions">{{ ui.csrf() }}<input type="hidden" name="action" value="role">
+          <select name="role" aria-label="Role for {{ p.email }}" style="width:auto">
+            {% for key, label in roles %}{% if me.role == 'owner' or key != 'owner' %}<option value="{{ key }}" {{ 'selected' if p.role == key }}>{{ label }}</option>{% endif %}{% endfor %}
+          </select><button class="btn small">Save</button>
+        </form>
+        {% else %}{{ ui.badge('ok' if p.role == 'owner' else ('contacted' if p.role == 'admin' else 'plain'), p.role) }}{% endif %}
+      </td>
+      <td class="small muted nowrap">{{ p.last_seen_at|ago if p.last_seen_at else 'never' }}</td>
+      <td class="small muted nowrap">{{ p.created_at|dt('%d %b %Y') }}{% if p.added_by and p.added_by != 'install' %}<div class="tiny">by {{ p.added_by }}</div>{% endif %}</td>
+      <td class="right nowrap">
+        {% if can_change %}
+        <form class="inline" method="post" action="{{ url_for('ui.team_update', email=p.email) }}">{{ ui.csrf() }}
+          {% if not proxy or mail_api %}<button class="btn small" name="action" value="password" data-confirm="Make a new password for {{ p.email }}? Their old one stops working.">New password</button>{% endif %}
+          <button class="btn small ghost danger" name="action" value="remove" data-confirm="Remove {{ p.email }}? They will not be able to sign in to {{ brand }} any more.">Remove</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+
+<div class="grid two">
+  <section class="card">
+    <h2>Add a person</h2>
+    <form method="post" action="{{ url_for('ui.team_add') }}">{{ ui.csrf() }}
+      <div class="field"><label for="t-email">Email</label>
+        <input id="t-email" type="email" name="email" required placeholder="{{ 'sara@' ~ domain if domain else 'sara@company.com' }}">
+        {% if proxy %}<p class="hint" style="margin-top:6px">They sign in with a mailbox on this server{% if domain %}, usually an address at {{ domain }}{% endif %}.</p>{% endif %}</div>
+      <div class="field"><label for="t-name">Name <span class="hint">optional</span></label><input id="t-name" type="text" name="name" maxlength="120"></div>
+      <div class="field"><label>Role</label>
+        <div class="choices">
+          <label class="choice"><input type="radio" name="role" value="member" checked> <span><strong>Member</strong><span class="hint">Leads, campaigns, inbox, calendar, AI agent, analytics.</span></span></label>
+          <label class="choice"><input type="radio" name="role" value="admin"> <span><strong>Admin</strong><span class="hint">Also settings, domain, sending accounts, API keys, and adding members.</span></span></label>
+          {% if me.role == 'owner' %}<label class="choice"><input type="radio" name="role" value="owner"> <span><strong>Owner</strong><span class="hint">Everything, including adding and removing admins and owners.</span></span></label>{% endif %}
+        </div>
+      </div>
+      {% if proxy %}
+        {% if mail_api %}
+        <label class="check"><input type="checkbox" name="create_mailbox" checked> <span>Create a mailbox for them on this server <span class="hint">(and show me its password). Leave it on unless they already have one.</span></span></label>
+        {% else %}
+        <p class="hint">Create their mailbox in <a href="{{ admin_url }}">Mail admin</a> first; they sign in with it.</p>
+        {% endif %}
+      {% else %}
+        <p class="hint">A password is made for them and shown once.</p>
+      {% endif %}
+      <button class="btn primary">Add person</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Your account</h2>
+    <p class="small"><strong>{{ me.name or me.email }}</strong> · {{ me.role }}<br><span class="muted mono tiny">{{ me.email }}</span></p>
+    {% if proxy %}
+      <p class="small muted">You sign in with your mailbox on this server.</p>
+      <a class="btn" href="{{ admin_url }}/user/password">Change my password</a>
+    {% else %}
+    <form method="post" action="{{ url_for('ui.me_password') }}">{{ ui.csrf() }}<input type="hidden" name="next" value="{{ url_for('ui.team') }}">
+      <div class="field"><label for="pw-current">Current password</label><input id="pw-current" type="password" name="current" autocomplete="current-password" required></div>
+      <div class="row">
+        <div class="field"><label for="pw-new">New password <span class="hint">10+ characters</span></label><input id="pw-new" type="password" name="new" autocomplete="new-password" minlength="10" required></div>
+        <div class="field"><label for="pw-confirm">Again</label><input id="pw-confirm" type="password" name="confirm" autocomplete="new-password" minlength="10" required></div>
+      </div>
+      <button class="btn">Change my password</button>
+    </form>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}
