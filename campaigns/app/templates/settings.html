@@ -1,0 +1,241 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Settings{% endblock %}
+
+{% macro secret_field(key, label, hint='') %}
+<div class="field">
+  <label for="{{ key }}">{{ label }}{% if hint %} <span class="hint">{{ hint }}</span>{% endif %}</label>
+  <input id="{{ key }}" type="password" name="{{ key }}" autocomplete="new-password" placeholder="{{ 'Saved. Type a new value to replace it.' if has_secret[key] else '' }}">
+  {% if has_secret[key] %}<label class="check small" style="margin-top:4px"><input type="checkbox" name="clear_{{ key }}"> Remove the saved value</label>{% endif %}
+</div>
+{% endmacro %}
+
+{% block body %}
+<div class="head"><div><div class="eyebrow">Setup</div><h1>Settings</h1></div>
+  <nav class="segmented" aria-label="Sections">
+    <a href="#sender">Sender</a><a href="#pacing">Speed</a><a href="#ai">AI</a><a href="#replies">Replies</a>
+    <a href="#bounces">Bounces</a><a href="#leadtools">Lead tools</a><a href="#api">API</a><a href="#webhooks">Webhooks</a>
+  </nav>
+</div>
+
+<div class="card" id="sender">
+  <h2>Sender</h2>
+  <form method="post">{{ ui.csrf() }}<input type="hidden" name="section" value="sender">
+    <div class="row">
+      <div class="field"><label for="from_name">From name</label><input id="from_name" type="text" name="from_name" value="{{ s.from_name }}" maxlength="120" placeholder="Your company"></div>
+      <div class="field"><label for="from_email">From address</label><input id="from_email" type="email" name="from_email" value="{{ s.from_email }}" placeholder="news@yourdomain.com">
+        <div class="hint">Must be on a domain this mail server hosts, so the email can be signed.</div></div>
+      <div class="field"><label for="reply_to">Reply-to <span class="hint">optional</span></label><input id="reply_to" type="email" name="reply_to" value="{{ s.reply_to }}"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label for="postal_address">Postal address <span class="hint">shown in the footer of every campaign; required by anti-spam law in the US, EU and elsewhere</span></label><input id="postal_address" type="text" name="postal_address" value="{{ s.postal_address }}" maxlength="300" placeholder="Company Ltd, 1 Example Street, City, Country"></div>
+      <div class="field"><label for="timezone">Timezone <span class="hint">now {{ local_now }} there</span></label><input id="timezone" type="text" name="timezone" value="{{ s.timezone }}" placeholder="Europe/Berlin"></div>
+    </div>
+    <button class="btn primary">Save sender</button>
+  </form>
+</div>
+
+<div class="card" id="pacing">
+  <div class="card-head"><h2>Sending speed and warm-up</h2><a class="btn small" href="{{ url_for('ui.health_page') }}"><svg><use href="#i-pulse"/></svg>Sending health</a></div>
+  <p class="muted small">Defaults for new campaigns. Mailbox providers judge a sender by steady volume, low bounces and few complaints, so a new server should start slowly and grow.
+    <a href="{{ url_for('ui.health_page') }}">Sending health</a> shows how many emails you can still send today, your open, bounce and spam rates, and runs an inbox-or-spam test.</p>
+  <form method="post">{{ ui.csrf() }}<input type="hidden" name="section" value="pacing">
+    <div class="row">
+      <div class="field"><label for="rate_per_hour">Emails per hour, per campaign</label><input id="rate_per_hour" type="number" name="rate_per_hour" min="1" value="{{ s.rate_per_hour }}"></div>
+      <div class="field"><label for="daily_cap">Daily limit per campaign <span class="hint">0 = none</span></label><input id="daily_cap" type="number" name="daily_cap" min="0" value="{{ s.daily_cap }}"></div>
+      <div class="field"><label for="domain_hourly_cap">Per receiving domain, per hour <span class="hint">0 = none</span></label><input id="domain_hourly_cap" type="number" name="domain_hourly_cap" min="0" value="{{ s.domain_hourly_cap }}">
+        <div class="hint">For example at most 200 emails an hour to gmail.com, across all campaigns.</div></div>
+    </div>
+    <div class="row">
+      <div class="field"><label for="delay_min">Random gap between emails, from <span class="hint">seconds, optional</span></label><input id="delay_min" type="number" name="delay_min" min="0" value="{{ s.delay_min }}"></div>
+      <div class="field"><label for="delay_max">to <span class="hint">seconds</span></label><input id="delay_max" type="number" name="delay_max" min="0" value="{{ s.delay_max }}"></div>
+      <div class="field"><label for="window_start">Send only between</label><input id="window_start" type="time" name="window_start" value="{{ s.window_start }}"></div>
+      <div class="field"><label for="window_end">and</label><input id="window_end" type="time" name="window_end" value="{{ s.window_end }}"></div>
+    </div>
+    <div class="field"><label>On these days</label>
+      <div class="days">{% for name in ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun') %}<label><input type="checkbox" name="window_days" value="{{ loop.index0 }}" {{ 'checked' if loop.index0|string in s.window_days }}> {{ name }}</label>{% endfor %}</div>
+    </div>
+    <h3 style="margin-top:18px">Warm-up</h3>
+    <label class="check"><input type="checkbox" name="warmup_enabled" {{ 'checked' if s.warmup_enabled == '1' }}> <span>Limit total campaign email per day and raise the limit every day{% if warmup_today is not none %} <span class="hint">· today's limit is {{ warmup_today|num }}</span>{% endif %}</span></label>
+    <div class="row">
+      <div class="field"><label for="warmup_start">First day</label><input id="warmup_start" type="number" name="warmup_start" min="1" value="{{ s.warmup_start }}"></div>
+      <div class="field"><label for="warmup_growth">Multiply each day by</label><input id="warmup_growth" type="text" name="warmup_growth" value="{{ s.warmup_growth }}"></div>
+      <div class="field"><label for="warmup_max">Stop growing at</label><input id="warmup_max" type="number" name="warmup_max" min="1" value="{{ s.warmup_max }}"></div>
+    </div>
+    <h3 style="margin-top:18px">Tracking</h3>
+    <label class="check"><input type="checkbox" name="track_opens" {{ 'checked' if s.track_opens == '1' }}> Track opens</label>
+    <label class="check"><input type="checkbox" name="track_clicks" {{ 'checked' if s.track_clicks == '1' }}> Track clicks</label>
+    <button class="btn primary">Save sending settings</button>
+  </form>
+</div>
+
+<div class="card" id="ai">
+  <h2>AI agent</h2>
+  <form method="post" id="ai-form" data-models-url="{{ url_for('ui.settings_models') }}">{{ ui.csrf() }}<input type="hidden" name="section" value="ai">
+    <div class="field"><label for="ai_provider">Provider</label>
+      <select id="ai_provider" name="ai_provider">
+        <option value="openrouter" {{ 'selected' if s.ai_provider == 'openrouter' }}>OpenRouter (one key, models from many companies)</option>
+        <option value="anthropic" {{ 'selected' if s.ai_provider == 'anthropic' }}>Anthropic (Claude, direct)</option>
+      </select></div>
+    <div class="row" data-provider="openrouter">
+      {{ secret_field('ai_key_openrouter', 'OpenRouter API key', 'from openrouter.ai/keys') }}
+      <div class="field"><label for="ai_model_openrouter">Model <span class="hint">empty = newest Claude model on OpenRouter</span></label>
+        <input id="ai_model_openrouter" type="text" name="ai_model_openrouter" value="{{ s.ai_model_openrouter }}" list="models-openrouter" placeholder="click “Load models”">
+        <datalist id="models-openrouter"></datalist></div>
+    </div>
+    <div class="row" data-provider="anthropic">
+      {{ secret_field('ai_key_anthropic', 'Anthropic API key', 'from console.anthropic.com') }}
+      <div class="field"><label for="ai_model_anthropic">Model <span class="hint">empty = {{ anthropic_default }}</span></label>
+        <input id="ai_model_anthropic" type="text" name="ai_model_anthropic" value="{{ s.ai_model_anthropic }}" list="models-anthropic" placeholder="{{ anthropic_default }}">
+        <datalist id="models-anthropic"></datalist></div>
+    </div>
+    <p><button type="button" class="btn small" id="load-models">Load models and prices</button> <span class="small muted" id="models-status"></span></p>
+    <div id="model-picks" class="model-picks" hidden>
+      <div><div class="small strong">For the chat agent <span class="hint">· needs to follow instructions and use tools well</span></div><div class="pick-row" data-picks="agent" data-target="agent"></div></div>
+      <div><div class="small strong">For writing each email and the inbox <span class="hint">· one call per lead, so price matters most</span></div><div class="pick-row" data-picks="writer" data-target="ai_model_writer"></div></div>
+      <p class="hint">Prices per million tokens (input / output). One personal email is about 1,500 tokens in and 150 out. Free models are limited to 50 requests a day, so they suit testing only.</p>
+    </div>
+    <div class="field"><label for="ai_model_writer">Model for writing each lead's email and sorting replies <span class="hint">empty = same as above. One call per lead, so a cheaper model saves the most here.</span></label>
+      <input id="ai_model_writer" type="text" name="ai_model_writer" value="{{ s.ai_model_writer }}" placeholder="same as the agent" list="models-writer">
+      <datalist id="models-writer"></datalist></div>
+    <label class="check"><input type="checkbox" name="ai_web_search" {{ 'checked' if s.ai_web_search == '1' }}> <span>Let the agent search the web <span class="hint">· for current facts about a company or topic. Your AI provider charges a little extra per search.</span></span></label>
+    <label class="check"><input type="checkbox" name="ai_require_approval" {{ 'checked' if s.ai_require_approval == '1' }}> <span>Ask me before the agent sends anything <span class="hint">· the agent prepares campaigns and emails, and they wait in "Waiting for your approval" until you click Approve. Turn this off to let it schedule and send by itself.</span></span></label>
+    <div class="field"><label for="ai_brand_voice">Notes for the agent <span class="hint">optional: who you are, what you sell, your tone of voice</span></label><textarea id="ai_brand_voice" name="ai_brand_voice" maxlength="4000">{{ s.ai_brand_voice }}</textarea></div>
+    <button class="btn primary">Save AI settings</button>
+    {% if ai_usage %}
+    <details style="margin-top:14px"><summary class="small" style="cursor:pointer">AI usage by month</summary>
+      <table style="margin-top:8px"><thead><tr><th>Month</th><th>For</th><th class="num">Calls</th><th class="num">Tokens in</th><th class="num">Tokens out</th></tr></thead><tbody>
+      {% for u in ai_usage %}<tr><td class="mono small">{{ u.month }}</td><td class="small">{{ {'agent': 'Agent chat', 'writer': 'Writing per lead', 'inbox': 'Inbox sorting and drafts'}.get(u.kind, u.kind) }}</td>
+        <td class="num">{{ u.calls|num }}</td><td class="num">{{ u.input_tokens|num }}</td><td class="num">{{ u.output_tokens|num }}</td></tr>{% endfor %}
+      </tbody></table>
+      <p class="hint" style="margin-top:6px">Your provider's dashboard shows the exact cost.</p>
+    </details>
+    {% endif %}
+  </form>
+</div>
+
+<div class="card" id="replies">
+  <h2>Replies</h2>
+  <p class="muted small">The mailbox your leads reply to: your From or Reply-to address. Replies from leads show up in the Inbox within a minute, and automatic follow-ups stop for anyone who answered.
+    The mailbox is only read; messages stay unread in your webmail.</p>
+  <form method="post">{{ ui.csrf() }}<input type="hidden" name="section" value="replies">
+    <div class="row">
+      <div class="field"><label for="reply_imap_user">Mailbox (email address)</label><input id="reply_imap_user" type="text" name="reply_imap_user" value="{{ s.reply_imap_user }}" placeholder="{{ s.reply_to or s.from_email or 'you@yourdomain.com' }}"></div>
+      {{ secret_field('reply_imap_password', 'Mailbox password') }}
+    </div>
+    <details style="margin-bottom:12px"><summary class="small muted" style="cursor:pointer">Mail server (only if this mailbox is on another server)</summary>
+      <div class="row" style="margin-top:10px">
+        <div class="field"><label for="reply_imap_host">IMAP host <span class="hint">empty = this server</span></label><input id="reply_imap_host" type="text" name="reply_imap_host" value="{{ s.reply_imap_host }}" placeholder="imap.gmail.com"></div>
+        <div class="field"><label for="reply_imap_port">Port <span class="hint">empty = 993</span></label><input id="reply_imap_port" type="number" name="reply_imap_port" value="{{ s.reply_imap_port }}"></div>
+      </div>
+    </details>
+    <div class="field"><label>When a lead is interested, asks a question or wants a meeting</label>
+      <div class="choice-list">
+        {% for key, label, hint in [('off', 'I answer myself', 'The AI sorts replies; you write the answers (it can still suggest one on request).'),
+                                     ('draft', 'The AI writes a draft for me', 'A ready answer waits in the Inbox. You check it and click Send.'),
+                                     ('send', 'The AI answers by itself', 'Sent from the same account, in the same thread. Held for approval while “Ask me before the agent sends anything” is on. Answers that need a fact from you, like [your calendar link], stay drafts.')] %}
+        <label class="check"><input type="radio" name="ai_reply_mode" value="{{ key }}" {{ 'checked' if (s.ai_reply_mode or 'off') == key }}> <span>{{ label }} <span class="hint">· {{ hint }}</span></span></label>
+        {% endfor %}
+      </div>
+      <p class="hint" style="margin-top:6px">Interested leads also get a follow-up task on your calendar two days later.</p>
+    </div>
+    <button class="btn primary">Save replies</button>
+    {% if reply_status %}<span class="small muted" style="margin-left:8px">Last read {{ reply_status.at|ago }}:
+      {% if not reply_status.configured %}not set up{% elif reply_status.ok %}OK, {{ reply_status.replies }} new repl{{ 'y' if reply_status.replies == 1 else 'ies' }}{% else %}failed ({{ reply_status.error }}){% endif %}</span>{% endif %}
+  </form>
+</div>
+
+<div class="card" id="leadtools">
+  <h2>Lead tools</h2>
+  <p class="muted small">The email finder works without a key: it guesses common address patterns and checks the domain takes email. A <a href="https://hunter.io" target="_blank" rel="noopener noreferrer">Hunter.io</a> key (free plan available) adds verified addresses and a search for everyone at a company.</p>
+  <form method="post">{{ ui.csrf() }}<input type="hidden" name="section" value="leadtools">
+    <div class="row">{{ secret_field('hunter_api_key', 'Hunter.io API key', 'optional') }}</div>
+    <button class="btn primary">Save lead tools</button>
+  </form>
+</div>
+
+<div class="card" id="bounces">
+  <h2>Bounces and spam complaints</h2>
+  <p class="muted small">Bounce messages and complaint reports come back by email. Create a mailbox for them in Mail admin (for example <code>bounces@{{ cfg.DOMAIN or 'yourdomain.com' }}</code>), then enter it here. It is checked every two minutes; permanent bounces and complaints are suppressed automatically.</p>
+  <form method="post">{{ ui.csrf() }}<input type="hidden" name="section" value="bounces">
+    <div class="row">
+      <div class="field"><label for="bounce_address">Bounce address</label><input id="bounce_address" type="email" name="bounce_address" value="{{ s.bounce_address }}" placeholder="bounces@{{ cfg.DOMAIN or 'yourdomain.com' }}"></div>
+      <div class="field"><label for="imap_user">Mailbox user</label><input id="imap_user" type="text" name="imap_user" value="{{ s.imap_user }}" placeholder="bounces@{{ cfg.DOMAIN or 'yourdomain.com' }}"></div>
+      {{ secret_field('imap_password', 'Mailbox password') }}
+    </div>
+    <details style="margin-bottom:12px"><summary class="small muted" style="cursor:pointer">Mail server address (only if the mailbox is on another server)</summary>
+      <div class="row" style="margin-top:10px">
+        <div class="field"><label for="imap_host">IMAP host <span class="hint">empty = {{ cfg.IMAP_HOST }}</span></label><input id="imap_host" type="text" name="imap_host" value="{{ s.imap_host }}"></div>
+        <div class="field"><label for="imap_port">Port <span class="hint">empty = {{ cfg.IMAP_PORT }}</span></label><input id="imap_port" type="number" name="imap_port" value="{{ s.imap_port }}"></div>
+      </div>
+      <label class="check"><input type="checkbox" name="imap_verify_tls" {{ 'checked' if s.imap_verify_tls == '1' }}> Verify the server's certificate (turn on for an external server)</label>
+    </details>
+    <button class="btn primary">Save mailbox</button>
+  </form>
+  <form method="post" action="{{ url_for('ui.settings_bounce_check') }}" style="margin-top:10px">{{ ui.csrf() }}
+    <button class="btn small">Check the mailbox now</button>
+    {% if bounce_status %}<span class="small muted">Last check {{ bounce_status.at|ago }}:
+      {% if not bounce_status.configured %}not set up{% elif bounce_status.ok %}OK, {{ bounce_status.bounces }} bounce(s) and {{ bounce_status.complaints }} complaint(s) processed{% else %}failed ({{ bounce_status.error }}){% endif %}</span>{% endif %}
+  </form>
+</div>
+
+<div class="card" id="api">
+  <h2>API keys</h2>
+  <p class="muted small">Send email from your own apps: <code>POST {{ api_base }}/emails</code> with <code>Authorization: Bearer &lt;key&gt;</code> and a JSON body of <code>from</code>, <code>to</code>, <code>subject</code>, <code>html</code>.</p>
+  {% if new_key %}<div class="notice ok"><strong>Copy your new key now. It is not shown again.</strong><div class="secret">{{ new_key }}</div></div>{% endif %}
+  {% if api_keys %}
+  <table style="margin-bottom:12px">
+    <tr><th>Name</th><th>Key</th><th>Created</th><th>Last used</th><th></th></tr>
+    {% for k in api_keys %}
+    <tr><td>{{ k.name }}</td><td class="mono small">{{ k.prefix }}…</td><td class="small muted">{{ k.created_at|dt('%d %b %Y') }}</td><td class="small muted">{{ k.last_used_at|ago or 'never' }}</td>
+      <td class="right"><form class="inline" method="post" action="{{ url_for('ui.settings_api_keys') }}" data-confirm="Revoke this key? Apps using it will stop working.">{{ ui.csrf() }}<input type="hidden" name="action" value="revoke"><input type="hidden" name="id" value="{{ k.id }}"><button class="btn small danger">Revoke</button></form></td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  <form method="post" action="{{ url_for('ui.settings_api_keys') }}" class="row" style="align-items:end">{{ ui.csrf() }}
+    <div class="field" style="margin:0"><label for="key_name">New key name</label><input id="key_name" type="text" name="name" maxlength="80" placeholder="My website"></div>
+    <div><button class="btn">Create API key</button></div>
+  </form>
+</div>
+
+<div class="card" id="webhooks">
+  <h2>Webhooks</h2>
+  <p class="muted small">Get a POST request when an email is sent, opened, clicked, bounced, reported as spam or unsubscribed. Each request is signed: <code>X-Webhook-Signature: sha256=HMAC(secret, timestamp + "." + body)</code>.</p>
+  {% if new_webhook_secret %}<div class="notice ok"><strong>Signing secret for the new webhook. It is not shown again.</strong><div class="secret">{{ new_webhook_secret }}</div></div>{% endif %}
+  {% if webhooks %}
+  <table style="margin-bottom:12px">
+    <tr><th>URL</th><th>Events</th><th></th></tr>
+    {% for w in webhooks %}
+    <tr><td class="small" style="word-break:break-all">{{ w.url }}</td><td class="small muted">{{ 'all' if w.events == '*' else w.events|replace(',', ', ') }}</td>
+      <td class="right"><form class="inline" method="post" action="{{ url_for('ui.settings_webhooks') }}" data-confirm="Remove this webhook?">{{ ui.csrf() }}<input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{{ w.id }}"><button class="btn small danger">Remove</button></form></td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  <form method="post" action="{{ url_for('ui.settings_webhooks') }}">{{ ui.csrf() }}
+    <div class="field"><label for="webhook_url">Endpoint URL</label><input id="webhook_url" type="url" name="url" placeholder="https://example.com/hooks/email" required></div>
+    <div class="days" style="margin-bottom:12px">
+      {% for e in ('sent', 'opened', 'clicked', 'bounced', 'complained', 'unsubscribed', 'failed') %}<label><input type="checkbox" name="events" value="email.{{ e }}"> {{ e }}</label>{% endfor %}
+      <span class="hint" style="align-self:center">none ticked = all events</span>
+    </div>
+    <button class="btn">Add webhook</button>
+  </form>
+</div>
+
+<details class="box" id="smtp" {{ 'open' if s.smtp_host }}>
+  <summary>Outgoing mail server (advanced)</summary>
+  <p class="muted small">Leave empty to send through this server's own mail service (<code>{{ cfg.SMTP_HOST }}:{{ cfg.SMTP_PORT }}</code>). Fill in only to send through a different SMTP server.</p>
+  <form method="post">{{ ui.csrf() }}<input type="hidden" name="section" value="smtp">
+    <div class="row">
+      <div class="field"><label for="smtp_host">Host</label><input id="smtp_host" type="text" name="smtp_host" value="{{ s.smtp_host }}"></div>
+      <div class="field"><label for="smtp_port">Port</label><input id="smtp_port" type="number" name="smtp_port" value="{{ s.smtp_port }}" placeholder="587"></div>
+      <div class="field"><label for="smtp_tls">Security</label><select id="smtp_tls" name="smtp_tls">
+        {% for value, label in (('none', 'None'), ('starttls', 'STARTTLS'), ('ssl', 'SSL/TLS')) %}<option value="{{ value }}" {{ 'selected' if (s.smtp_tls or 'none') == value }}>{{ label }}</option>{% endfor %}</select></div>
+    </div>
+    <div class="row">
+      <div class="field"><label for="smtp_user">User</label><input id="smtp_user" type="text" name="smtp_user" value="{{ s.smtp_user }}" autocomplete="off"></div>
+      {{ secret_field('smtp_password', 'Password') }}
+    </div>
+    <button class="btn primary">Save mail server</button>
+  </form>
+</details>
+{% endblock %}

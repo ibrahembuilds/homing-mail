@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}{{ m.subject or 'Email' }}{% endblock %}
+{% block body %}
+<div class="head">
+  <div>
+    <div class="crumb"><a href="{{ url_for('ui.emails') }}">Email log</a> /</div>
+    <h1>{{ m.subject or '(no subject)' }} {{ ui.badge(m.status, {'cancelled': 'skipped', 'queued': 'waiting'}.get(m.status)) }}</h1>
+    <div class="sub">To {{ m.to_email }} · from {{ m.from_email }}{% if m.campaign_id %} · campaign <a href="{{ url_for('ui.campaign', campaign_id=m.campaign_id) }}">{{ m.campaign_name }}</a>{% endif %}</div>
+  </div>
+  {% if m.status == 'pending_approval' %}
+  <form class="actions" method="post" action="{{ url_for('ui.email_decide', mid=m.id) }}">{{ ui.csrf() }}
+    <button class="btn primary" name="action" value="approve">Approve and send</button>
+    <button class="btn" name="action" value="discard">Discard</button>
+  </form>
+  {% endif %}
+</div>
+
+{% if m.error %}<div class="notice {{ 'bad' if m.status in ('failed', 'bounced') else 'warn' }}"><strong>Mail server reply:</strong> {{ m.error }}</div>{% endif %}
+
+<div class="card">
+  <h2>What happened</h2>
+  {% if events %}
+  <ul class="timeline">
+    {% for e in events %}
+    <li>
+      <span class="muted small">{{ e.at|dt('%d %b %Y %H:%M:%S') }}</span>
+      <span>{{ ui.badge(e.type if e.type != 'sent' else 'sent') }}</span>
+      <span class="small">
+        {% if e.type == 'clicked' %}<span style="word-break:break-all">{{ e.url or e.detail }}</span>
+        {% elif e.detail %}{{ e.detail }}{% endif %}
+        {% if e.automated %}<span class="muted"> · looks automatic (mail scanner or privacy proxy)</span>{% endif %}
+        {% if e.user_agent and e.type in ('opened', 'clicked') %}<div class="muted">{{ e.user_agent|truncate(90) }}</div>{% endif %}
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="muted">Nothing yet.</p>{% endif %}
+</div>
+
+{% if payload.html or payload.text %}
+<div class="card">
+  <h2>Content</h2>
+  {% if payload.html %}<iframe class="preview" sandbox="" srcdoc="{{ payload.html }}" title="Email content"></iframe>
+  {% else %}<pre style="white-space:pre-wrap;margin:0">{{ payload.text }}</pre>{% endif %}
+</div>
+{% endif %}
+<p class="muted small">Email id <code>{{ m.id }}</code></p>
+{% endblock %}

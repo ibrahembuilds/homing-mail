@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>{{ brand }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}?v={{ asset_version }}">
+  <style>:root { --brand: {{ cfg.BRAND_COLOR }}; }</style>
+</head>
+<body>
+<div class="center">
+  <div class="card">
+    {% if state == 'confirm' %}
+      <h1>Unsubscribe</h1>
+      <p class="muted" style="margin:10px 0 18px">Stop all emails from {{ brand }} to <strong>{{ email }}</strong>?</p>
+      <form method="post"><button class="btn primary" style="width:100%;justify-content:center">Yes, unsubscribe me</button></form>
+    {% elif state == 'done' %}
+      <h1>You are unsubscribed</h1>
+      <p class="muted" style="margin:10px 0 18px"><strong>{{ email }}</strong> will not receive any more emails from {{ brand }}.</p>
+      <form method="post"><input type="hidden" name="action" value="resubscribe"><button class="btn" style="width:100%;justify-content:center">That was a mistake, resubscribe me</button></form>
+    {% elif state == 'resubscribed' %}
+      <h1>Welcome back</h1>
+      <p class="muted" style="margin-top:10px"><strong>{{ email }}</strong> is subscribed again.</p>
+    {% elif state == 'test' %}
+      <h1>Test email</h1>
+      <p class="muted" style="margin-top:10px">This link came from a test send, so nothing was changed. In the real campaign it unsubscribes the reader.</p>
+    {% elif state == 'forbidden' %}
+      <h1>Sign in required</h1>
+      <p class="muted" style="margin-top:10px">Sign in to the mail admin as an administrator, then open this page again.</p>
+      <p><a class="btn primary" href="/sso/login?url={{ prefix }}/">Sign in</a></p>
+    {% elif state == 'expired' %}
+      <h1>Page expired</h1>
+      <p class="muted" style="margin-top:10px">This form was open for too long. Go back, reload the page and try again.</p>
+    {% else %}
+      <h1>Link not valid</h1>
+      <p class="muted" style="margin-top:10px">This link is incomplete or no longer exists.</p>
+    {% endif %}
+  </div>
+</div>
+</body>
+</html>

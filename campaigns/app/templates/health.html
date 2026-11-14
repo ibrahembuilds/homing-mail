@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Sending health{% endblock %}
+{% block body %}
+{% set t = stats.total %}
+{% set tone = {'good': '', 'warn': 'warn', 'bad': 'bad', 'few': ''} %}
+<div class="head">
+  <div><div class="eyebrow">Sending</div><h1>Sending health</h1>
+    <div class="sub">How much you can send, how people receive it, and whether it lands in the inbox or in spam.</div></div>
+  <div class="actions"><a class="btn" href="{{ url_for('ui.settings') }}#pacing">Speed &amp; limits</a></div>
+</div>
+
+<h2 class="section-title">Today</h2>
+<div class="tiles">
+  {{ ui.tile('Can still send today', cap.left_today|num if cap.left_today is not none else 'No limit', 'limited by ' ~ cap.limited_by if cap.limited_by else 'set limits in Settings') }}
+  {{ ui.tile('Sent today', cap.sent_today|num, 'of ' ~ cap.total|num if cap.total else '', 'warn' if cap.total and cap.sent_today >= cap.total else '') }}
+  {{ ui.tile('Speed', cap.rate_per_hour|num ~ ' / hour', 'over a ' ~ cap.window_hours ~ '-hour sending window') }}
+  {{ ui.tile('Email accounts', cap.accounts|length, (cap.account_total|num ~ ' a day together') if cap.account_total else 'using the server sender', href=url_for('ui.accounts')) }}
+  {% if cap.warmup %}{{ ui.tile('Warm-up limit', cap.warmup|num, 'grows every day') }}{% endif %}
+</div>
+
+<h2 class="section-title">Last {{ stats.days }} days</h2>
+<div class="tiles">
+  {{ ui.tile('Sent', t.sent|num) }}
+  {{ ui.tile('Opened', t.open_rate ~ '%', t.opened|num ~ ' emails · Apple Mail inflates this') }}
+  {{ ui.tile('Replied', t.reply_rate ~ '%', t.replied|num ~ ' replies') }}
+  {{ ui.tile('Bounced', t.bounce_rate ~ '%', t.bounced|num ~ ' emails · keep under 2%', tone[t.levels.bounce]) }}
+  {{ ui.tile('Refused by server', t.refused|num, 'blocked before delivery', 'warn' if t.refused else '') }}
+  {{ ui.tile('Marked as spam', t.complaint_rate ~ '%', t.complained|num ~ ' reports · keep under 0.1%', tone[t.levels.complaint]) }}
+  {{ ui.tile('Unsubscribed', t.unsubscribe_rate ~ '%', t.unsubscribed|num ~ ' people', tone[t.levels.unsubscribe]) }}
+</div>
+{% for a in stats.advice %}<div class="notice warn">{{ a }}</div>{% endfor %}
+{% if t.sent and t.sent < 20 %}<p class="muted small">Too few emails yet to judge the rates; they become meaningful after a few dozen.</p>{% endif %}
+
+{% if stats.per_account|length > 1 or (stats.per_account and stats.per_account[0].account != 'Server default sender') %}
+<section class="card flush">
+  <div class="card-head" style="padding:16px 18px 0"><h2>By email account</h2><span class="muted small">a mailbox with high bounces or spam reports should be paused</span></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Account</th><th class="right">Sent</th><th class="right">Opened</th><th class="right">Bounced</th><th class="right">Spam reports</th><th class="right">Unsubscribed</th></tr></thead>
+    <tbody>
+    {% for a in stats.per_account %}
+    <tr><td>{{ a.account }}</td><td class="right num">{{ a.sent|num }}</td><td class="right num">{{ a.open_rate }}%</td>
+      <td class="right">{{ ui.badge(a.levels.bounce if a.levels.bounce != 'few' else 'plain', a.bounce_rate ~ '%') }}</td>
+      <td class="right">{{ ui.badge(a.levels.complaint if a.levels.complaint != 'few' else 'plain', a.complaint_rate ~ '%') }}</td>
+      <td class="right num">{{ a.unsubscribe_rate }}%</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endif %}
+
+<section class="card" id="placement">
+  <div class="card-head"><h2>Inbox or spam? Placement test</h2></div>
+  <p class="muted small">Sends your email from each of your accounts to your own connected mailboxes, then looks which folder it landed in.
+    The more providers you connect (a Gmail, an Outlook, a Yahoo), the closer this is to what your leads see.</p>
+  {% if seeds %}
+  <p class="small">Checks: {% for s in seeds %}<span class="badge plain">{{ s.email }}</span> {% endfor %}</p>
+  <form method="post" action="{{ url_for('ui.health_placement') }}" class="actions">{{ ui.csrf() }}
+    <select name="campaign_id" aria-label="Email to test" style="max-width:320px">
+      <option value="">{{ 'Latest campaign' if campaigns else 'A short sample email' }}</option>
+      {% for c in campaigns %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}
+    </select>
+    <button class="btn primary" name="action" value="start"><svg><use href="#i-send"/></svg>Run placement test</button>
+  </form>
+  {% else %}
+  <div class="notice">Connect an email account with its inbox (IMAP) in <a href="{{ url_for('ui.accounts') }}">Email accounts</a> to run this test. Gmail and Outlook fill the IMAP details in for you.</div>
+  {% endif %}
+
+  {% if test %}
+  <div class="placement">
+    <div class="placement-head">
+      <div><strong>{% if test.finished %}{{ test.inbox_rate }}% reached the inbox{% else %}Checking… {{ test.counts.waiting }} of {{ test.total }} not found yet{% endif %}</strong>
+        <div class="muted small">Started {{ test.created_at|ago }}{% if test.checked_at %} · checked {{ test.checked_at|ago }}{% endif %}</div></div>
+      {% if not test.finished %}
+      <form method="post" action="{{ url_for('ui.health_placement') }}">{{ ui.csrf() }}<input type="hidden" name="test_id" value="{{ test.id }}">
+        <button class="btn small" name="action" value="check">Check now</button></form>
+      {% endif %}
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>From</th><th>To</th><th>Result</th></tr></thead>
+      <tbody>
+      {% for r in test.results %}
+      <tr><td class="small">{{ r.from }}</td><td class="small">{{ r.to }} <span class="muted tiny">{{ r.provider }}</span></td>
+        <td>{% if r.state == 'inbox' %}{{ ui.badge('ok', 'Inbox') }}{% elif r.state == 'spam' %}{{ ui.badge('bad', 'Spam · ' ~ r.folder) }}{% elif r.state == 'missing' %}{{ ui.badge('warn', 'Not found') }}{% elif r.state == 'failed' %}{{ ui.badge('bad', 'Not sent') }} <span class="tiny muted">{{ r.folder }}</span>{% else %}{{ ui.badge('pending', 'Waiting') }}{% endif %}
+          {% if r.error %}<div class="tiny muted">{{ r.error }}</div>{% endif %}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    {% if test.counts.spam %}<div class="notice warn small" style="margin-top:12px">Some emails landed in spam. Check SPF, DKIM and DMARC in <a href="{{ url_for('ui.domains') }}">Domain &amp; DNS</a>, remove links and images, shorten the email, and lower the daily volume of that account for a week.</div>{% endif %}
+    {% if test.counts.missing %}<p class="muted small" style="margin-top:8px">"Not found" means the email is in neither the inbox nor spam after 20 minutes: the provider may have dropped it, or a filter moved it to another folder.</p>{% endif %}
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

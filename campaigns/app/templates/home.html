@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Home{% endblock %}
+{% block body %}
+<div class="head">
+  <div>
+    <div class="eyebrow">Last 30 days</div>
+    <h1>Home</h1>
+    <div class="sub">{{ contacts_count|num }} active leads in {{ lists_count }} list{{ '' if lists_count == 1 else 's' }}</div>
+  </div>
+  <div class="actions">
+    <a class="btn" href="{{ url_for('ui.lists') }}"><svg><use href="#i-upload"/></svg>Upload leads</a>
+    <form class="inline" method="post" action="{{ url_for('ui.campaign_new') }}">{{ ui.csrf() }}<button class="btn primary"><svg><use href="#i-send"/></svg>New campaign</button></form>
+  </div>
+</div>
+
+{% if server_down %}
+<div class="notice bad"><h3>The mail server is not accepting mail</h3>Sending is on hold and resumes by itself when it is back. Last error: <code>{{ server_down }}</code></div>
+{% endif %}
+{% if writer_error %}
+<div class="notice warn"><h3>AI writing is paused</h3>{{ writer_error }} <a href="{{ url_for('ui.settings') }}#ai">Check the AI settings</a>.</div>
+{% endif %}
+
+{{ ui.approvals_box(approvals) }}
+
+{% set todo = checklist|rejectattr('done')|list %}
+{% if todo %}
+<section class="card getting-started">
+  <div class="card-head"><h2>Get started</h2><span class="muted small num">{{ checklist|length - todo|length }} of {{ checklist|length }} done</span></div>
+  <div class="progress"><span style="width: {{ 100 * (checklist|length - todo|length) / checklist|length }}%"></span></div>
+  <ul class="checklist">
+    {% for item in checklist %}
+    <li><span class="dot {{ 'done' if item.done }}">{{ '✓' if item.done }}</span>
+      {% if item.done %}<span class="muted">{{ item.text }}</span>{% else %}<a href="{{ item.href }}">{{ item.text }}</a>{% endif %}</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+<div class="grid two">
+  <section class="card flush">
+    <div class="card-head"><h2>New replies</h2><a class="small" href="{{ url_for('ui.inbox') }}">Open inbox</a></div>
+    {% if new_replies %}
+    <table class="hover"><tbody>
+      {% for r in new_replies %}
+      <tr class="{{ 'unread' if not r.read_at }}">
+        <td style="width:34%" class="nowrap"><a href="{{ url_for('ui.inbox_reply', reply_id=r.id) }}">{{ ui.lead_name(r) if r.email else r.from_email }}</a></td>
+        <td><div class="snippet">{{ r.summary or r.body }}</div></td>
+        <td class="right nowrap">{% if r.category %}{{ ui.badge(r.category) }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody></table>
+    {% else %}
+    {{ ui.empty('No replies waiting', 'Replies from your leads appear here as soon as they arrive.') }}
+    {% endif %}
+  </section>
+  <section class="card flush">
+    <div class="card-head"><h2>Follow-ups due today</h2><a class="small" href="{{ url_for('ui.calendar') }}">Open calendar</a></div>
+    {% if today_tasks %}
+    <table class="hover"><tbody>
+      {% for t in today_tasks %}
+      <tr>
+        <td>{% if t.contact_id %}<a href="{{ url_for('ui.lead', contact_id=t.contact_id) }}">{{ t.title }}</a>{% else %}{{ t.title }}{% endif %}
+          <div class="muted tiny">{{ ui.lead_name(t) if t.contact_id else '' }}</div></td>
+        <td class="nowrap num small {{ 'muted' }}">{{ t.due_at|dt('%d %b %H:%M') }}</td>
+        <td class="right"><form class="inline" method="post" action="{{ url_for('ui.task_update', task_id=t.id) }}">{{ ui.csrf() }}<button class="btn small" name="action" value="done">Done</button></form></td>
+      </tr>
+      {% endfor %}
+    </tbody></table>
+    {% else %}
+    {{ ui.empty('Nothing due today', 'Add follow-ups from a lead or a reply, and they show up here on the day.') }}
+    {% endif %}
+  </section>
+</div>
+
+
+{{ ui.stat_tiles(totals) }}
+
+<section class="card">
+  <h2>Activity</h2>
+  {% if totals.sent %}{{ ui.chart(series) }}{% else %}{{ ui.empty('No emails sent yet', 'Results appear here after your first campaign.') }}{% endif %}
+  {% if warmup is not none %}<p class="muted small" style="margin-top:10px">Warm-up is on: <span class="num">{{ sent_today|num }}</span> of today's <span class="num">{{ warmup|num }}</span> campaign emails used.</p>{% endif %}
+</section>
+
+<section class="card flush">
+  <div class="card-head"><h2>Recent campaigns</h2><a class="small" href="{{ url_for('ui.campaigns') }}">All campaigns</a></div>
+  {% if campaigns %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Campaign</th><th>Status</th><th class="num">Delivered</th><th class="num">Opened</th><th class="num">Clicked</th><th class="num">Replied</th></tr></thead>
+    <tbody>
+    {% for item in campaigns %}{% set c = item.row %}{% set s = item.stats %}
+    <tr>
+      <td><a href="{{ url_for('ui.campaign', campaign_id=c.id) }}"><strong>{{ c.name }}</strong></a><div class="muted tiny">{{ c.list_name or 'No list' }}</div></td>
+      <td>{{ ui.badge(c.status) }}</td>
+      {% if s %}<td class="num">{{ s.delivered|num }}</td><td class="num">{{ s.open_rate|pct }}</td><td class="num">{{ s.click_rate|pct }}</td><td class="num">{{ s.reply_rate|pct }}</td>
+      {% else %}<td class="num muted" colspan="4">Not sent yet</td>{% endif %}
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}
+  {{ ui.empty('No campaigns yet', 'Upload your leads, then write a campaign yourself or ask the AI agent to draft one.', url_for('ui.lists'), 'Upload leads') }}
+  {% endif %}
+</section>
+{% endblock %}

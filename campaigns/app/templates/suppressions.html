@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Suppression list{% endblock %}
+{% block body %}
+<div class="head">
+  <div>
+    <h1>Leads</h1>
+    <div class="sub">Addresses that are never mailed, whatever list they are in. Unsubscribes, permanent bounces and spam complaints are added automatically.</div>
+  </div>
+</div>
+{{ ui.leads_tabs() }}
+
+<div class="tiles">
+  {{ ui.tile('Unsubscribed', counts.get('unsubscribed', 0)|num) }}
+  {{ ui.tile('Bounced', counts.get('bounced', 0)|num) }}
+  {{ ui.tile('Complained', counts.get('complained', 0)|num) }}
+  {{ ui.tile('Added by hand', counts.get('manual', 0)|num) }}
+</div>
+
+<details class="box">
+  <summary>Add addresses by hand</summary>
+  <form method="post">{{ ui.csrf() }}
+    <div class="field"><textarea name="emails" placeholder="one address per line" required></textarea></div>
+    <button class="btn primary">Add to suppression list</button>
+  </form>
+</details>
+
+<div class="card flush">
+  <form class="filters" method="get">
+    <select name="reason">
+      <option value="">All reasons</option>
+      {% for value in ('unsubscribed', 'bounced', 'complained', 'manual') %}<option value="{{ value }}" {{ 'selected' if reason == value }}>{{ value|capitalize }}</option>{% endfor %}
+    </select>
+    <button class="btn small">Filter</button>
+  </form>
+  {% if rows %}
+  <div class="table-wrap"><table>
+    <tr><th>Email</th><th>Reason</th><th>Detail</th><th>Since</th><th></th></tr>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.email }}</td>
+      <td>{{ ui.badge(r.reason if r.reason != 'manual' else 'paused', r.reason) }}</td>
+      <td class="muted small">{{ r.detail|truncate(90) }}</td>
+      <td class="nowrap muted">{{ r.created_at|dt('%d %b %Y') }}</td>
+      <td class="right">
+        <form class="inline" method="post" data-confirm="Allow mail to {{ r.email }} again? Only do this if the person asked you to.">{{ ui.csrf() }}
+          <input type="hidden" name="action" value="remove"><input type="hidden" name="email" value="{{ r.email }}">
+          <button class="btn small">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {{ ui.pager(page, pages, total, 'addresses') }}
+  {% else %}
+  <div class="empty"><strong>Nothing suppressed</strong>Addresses appear here when someone unsubscribes, bounces or reports an email as spam.</div>
+  {% endif %}
+</div>
+{% endblock %}

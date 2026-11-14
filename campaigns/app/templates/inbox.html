@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Inbox{% endblock %}
+{% block body %}
+<div class="head">
+  <div><div class="eyebrow">Replies from your leads</div><h1>Inbox</h1>
+    <div class="sub">Sorted by the AI as they arrive. Answering here keeps the conversation in one thread.
+      AI answers: <a href="{{ url_for('ui.settings') }}#replies">{{ {'draft': 'drafts for you', 'send': 'answers by itself'}.get(reply_mode, 'off') }}</a></div></div>
+  <div class="segmented" role="tablist">
+    {% for key, label in views %}
+    <a class="{{ 'on' if view == key }}" href="?view={{ key }}">{{ label }}{% if counts.get(key) %}<span class="n">{{ counts[key] }}</span>{% endif %}</a>
+    {% endfor %}
+  </div>
+</div>
+
+{% if not connected %}
+<div class="notice warn">
+  <h3>Connect the mailbox your leads reply to</h3>
+  Replies go to your From or Reply-to address. Enter that mailbox in <a href="{{ url_for('ui.settings') }}#replies">Settings → Replies</a>
+  and they appear here within a minute. Nothing in the mailbox is changed: messages stay unread in webmail.
+</div>
+{% elif status and not status.ok %}
+<div class="notice bad">Could not read the reply mailbox: {{ status.error }}. <a href="{{ url_for('ui.settings') }}#replies">Check the settings</a>.</div>
+{% endif %}
+{% if inbox_error %}<div class="notice warn">The inbox AI hit a problem: {{ inbox_error }}</div>{% endif %}
+
+<section class="card flush">
+  {% if rows %}
+  <div class="table-wrap"><table class="hover">
+    <thead><tr><th>From</th><th>Reply</th><th>Sorted as</th><th>Lead</th><th class="right">Received</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+    <tr class="{{ 'unread' if not r.read_at }}">
+      <td style="min-width:180px"><a href="{{ url_for('ui.inbox_reply', reply_id=r.id) }}">{{ ui.lead_name(r) if r.email else (r.from_name or r.from_email) }}</a>
+        <div class="muted tiny mono">{{ r.from_email }}</div></td>
+      <td><div class="snippet" style="font-weight:{{ 600 if not r.read_at else 400 }}">{{ r.subject }}</div>
+        <div class="snippet">{{ r.summary or r.body }}</div></td>
+      <td>{% if r.category %}{{ ui.badge(r.category) }}{% else %}<span class="faint small">sorting…</span>{% endif %}
+        {% if r.draft and not r.handled_at %}<div class="tiny brand-ink"><svg class="inline-i"><use href="#i-spark"/></svg> AI answer ready</div>{% endif %}</td>
+      <td>{% if r.lead_status %}{{ ui.badge(r.lead_status) }}{% endif %}{% if r.campaign_name %}<div class="muted tiny">{{ r.campaign_name }}</div>{% endif %}</td>
+      <td class="right nowrap num small muted">{{ r.received_at|ago }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {{ ui.pager(page, pages, total, 'replies') }}
+  {% else %}
+  {{ ui.empty('Nothing to answer' if view == 'todo' else 'No replies here', 'When a lead answers one of your emails it shows up here, with the conversation and a suggested answer.') }}
+  {% endif %}
+</section>
+{% endblock %}

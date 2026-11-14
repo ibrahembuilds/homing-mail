@@ -1,0 +1,165 @@
+{% macro csrf() %}<input type="hidden" name="csrf" value="{{ csrf_token() }}">{% endmacro %}
+
+{% set LABELS = {
+  'pending_approval': 'needs approval', 'queued': 'waiting', 'cancelled': 'skipped', 'not_interested': 'not interested',
+  'meeting': 'meeting', 'out_of_office': 'out of office', 'unsubscribe': 'unsubscribe', 'no_reply': 'no reply',
+  'working': 'writing', 'pending': 'to write', 'done': 'written', 'edited': 'edited by you'} %}
+{% macro badge(status, label=None) %}<span class="badge {{ status }}">{{ label or LABELS.get(status, status|replace('_', ' ')) }}</span>{% endmacro %}
+
+{# items: (endpoint, label, extra endpoints that also light the tab) #}
+{% macro tabs(items) %}
+<nav class="tabs" aria-label="Section">
+  {% for endpoint, label, also in items %}<a class="{{ 'on' if request.endpoint == endpoint or request.endpoint in also }}" href="{{ url_for(endpoint) }}">{{ label }}</a>{% endfor %}
+</nav>
+{% endmacro %}
+
+{% macro leads_tabs() %}{{ tabs([('ui.leads', 'All leads', ('ui.lead',)), ('ui.lists', 'Lists & upload', ('ui.list_detail',)),
+  ('ui.finder', 'Find & verify emails', ()), ('ui.suppressions', 'Do-not-email', ())]) }}{% endmacro %}
+
+{% macro analytics_tabs() %}{{ tabs([('ui.analytics', 'Overview', ()), ('ui.emails', 'Email log', ('ui.email_detail',))]) }}{% endmacro %}
+
+{% macro tile(label, value, note='', tone='', href=None, on=False) %}
+{% if href %}<a class="tile {{ tone }} {{ 'on' if on }}" href="{{ href }}">{% else %}<div class="tile {{ tone }}">{% endif %}
+  <div class="label">{{ label }}</div>
+  <div class="value">{{ value }}</div>
+  {% if note %}<div class="note">{{ note }}</div>{% endif %}
+{% if href %}</a>{% else %}</div>{% endif %}
+{% endmacro %}
+
+{% macro empty(title, text='', action_href=None, action_label=None) %}
+<div class="empty">
+  <svg><use href="#i-envelope-empty"/></svg>
+  <strong>{{ title }}</strong>{{ text }}
+  {% if action_href %}<div><a class="btn primary" href="{{ action_href }}">{{ action_label }}</a></div>{% endif %}
+</div>
+{% endmacro %}
+
+{% macro meter(rate, scale=100) %}
+<div class="meter"><span>{{ rate|pct }}</span><div class="bar"><span style="width: {{ [rate * 100 / scale, 100]|min }}%"></span></div></div>
+{% endmacro %}
+
+{% macro pager(page, pages, total, noun='rows') %}
+<div class="pager">
+  <span><span class="num">{{ total|num }}</span> {{ noun }}</span>
+  {% if pages > 1 %}
+  {% set args = request.args.to_dict() %}
+  {% if page > 1 %}{% set _ = args.update({'page': page - 1}) %}<a class="btn small" href="?{{ args|urlencode }}">Previous</a>{% endif %}
+  <span>Page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}{% set _ = args.update({'page': page + 1}) %}<a class="btn small" href="?{{ args|urlencode }}">Next</a>{% endif %}
+  {% endif %}
+</div>
+{% endmacro %}
+
+{% macro lead_name(row) -%}
+{{ ((row.first_name or '') ~ ' ' ~ (row.last_name or ''))|trim or row.email }}
+{%- endmacro %}
+
+{# Daily bars: sent (light), opened (brand), clicked (ink). #}
+{% macro chart(series) %}
+{% set top = [series|map(attribute='sent')|max, series|map(attribute='opened')|max, 1]|max %}
+{% set n = series|length %}
+{% set w = 1000 / n %}
+<div class="chart">
+  <svg viewBox="0 0 1000 170" preserveAspectRatio="none" role="img" aria-label="Emails sent, opened and clicked per day">
+    <line x1="0" y1="150" x2="1000" y2="150" stroke="#d9e0e3" stroke-width="1"/>
+    {% for d in series %}
+    {% set x = loop.index0 * w %}
+    <g>
+      <title>{{ d.day }}: {{ d.sent }} sent, {{ d.opened }} opened, {{ d.clicked }} clicked, {{ d.bounced }} bounced</title>
+      <rect x="{{ x + w * 0.12 }}" y="{{ 150 - 140 * d.sent / top }}" width="{{ w * 0.76 }}" height="{{ 140 * d.sent / top }}" fill="#dfe5e8" rx="2"/>
+      <rect x="{{ x + w * 0.24 }}" y="{{ 150 - 140 * d.opened / top }}" width="{{ w * 0.52 }}" height="{{ 140 * d.opened / top }}" fill="var(--brand)" rx="2"/>
+      <rect x="{{ x + w * 0.36 }}" y="{{ 150 - 140 * d.clicked / top }}" width="{{ w * 0.28 }}" height="{{ 140 * d.clicked / top }}" fill="#17222b" rx="2"/>
+    </g>
+    {% endfor %}
+  </svg>
+  <div class="legend">
+    <span><i style="background:#dfe5e8"></i>Sent</span>
+    <span><i style="background:var(--brand)"></i>Opened</span>
+    <span><i style="background:#17222b"></i>Clicked</span>
+    <span class="mono" style="margin-left:auto">{{ series[0].day }} → {{ series[-1].day }} · peak {{ top|num }}/day</span>
+  </div>
+</div>
+{% endmacro %}
+
+{% macro stat_tiles(s) %}
+<div class="tiles">
+  {{ tile('Delivered', s.delivered|num, (s.sent|num) ~ ' sent · ' ~ (s.queued|num) ~ ' waiting') }}
+  {{ tile('Opened', s.open_rate|pct, (s.opened|num) ~ ' people · ' ~ (s.human_open_rate|pct) ~ ' confirmed') }}
+  {{ tile('Clicked', s.click_rate|pct, (s.clicked|num) ~ ' people') }}
+  {{ tile('Replied', s.reply_rate|pct, (s.replied|num) ~ ' people') }}
+  {{ tile('Bounced', s.bounce_rate|pct, (s.hard_bounced|num) ~ ' permanent', 'bad' if s.bounce_rate > 5 else ('warn' if s.bounce_rate > 2 else '')) }}
+  {{ tile('Marked as spam', s.complaint_rate|pct, (s.complained|num) ~ ' people', 'bad' if s.complaint_rate > 0.3 else ('warn' if s.complaint_rate > 0.1 else '')) }}
+  {{ tile('Unsubscribed', s.unsubscribe_rate|pct, (s.unsubscribed|num) ~ ' people') }}
+</div>
+{% endmacro %}
+
+{# Leads at each stage, from the first email to a booked meeting. #}
+{% macro funnel(stages) %}
+{% set total = stages[0].count %}
+<ol class="funnel">
+  {% for s in stages %}
+  <li class="stage-{{ s.key }}">
+    <div class="funnel-label"><strong>{{ s.label }}</strong>
+      {% if not loop.first %}<span class="hint">{{ s.of_previous|pct }} of {{ stages[loop.index0 - 1].label|lower }}</span>{% endif %}</div>
+    <div class="funnel-bar"><span style="width: {{ [s.of_total if total else 0, 0.6 if s.count else 0]|max }}%"></span></div>
+    <div class="funnel-num"><span class="num">{{ s.count|num }}</span>{% if not loop.first %} <span class="hint">{{ s.of_total|pct }}</span>{% endif %}</div>
+  </li>
+  {% endfor %}
+</ol>
+{% endmacro %}
+
+{% macro approvals_box(approvals) %}
+{% if approvals.campaigns or approvals.messages %}
+<section class="tray" id="approvals" aria-label="Waiting for your approval">
+  <div class="card-head"><h2>Waiting for your approval</h2><span class="muted small">Nothing here is sent until you approve it.</span></div>
+  <ul class="checklist">
+    {% for c in approvals.campaigns %}
+    <li>
+      <div style="flex:1;min-width:0">
+        <a href="{{ url_for('ui.campaign', campaign_id=c.id) }}"><strong>{{ c.name }}</strong></a>
+        <div class="muted small">Campaign to {{ c.list_name or 'no list' }} · “{{ c.subject }}” · starts {{ c.scheduled_at|dt }}</div>
+      </div>
+      <form class="inline actions" method="post" action="{{ url_for('ui.campaign_state', campaign_id=c.id) }}">{{ csrf() }}
+        <a class="btn small" href="{{ url_for('ui.campaign', campaign_id=c.id) }}">Review</a>
+        <button class="btn small primary" name="action" value="approve">Approve</button>
+        <button class="btn small ghost" name="action" value="unschedule">Back to draft</button>
+      </form>
+    </li>
+    {% endfor %}
+    {% for m in approvals.messages %}
+    <li>
+      <div style="flex:1;min-width:0">
+        <a href="{{ url_for('ui.email_detail', mid=m.id) }}"><strong>{{ m.subject }}</strong></a>
+        <div class="muted small">{{ 'Reply' if m.kind == 'reply' else 'Email' }} to <span class="mono">{{ m.to_email }}</span></div>
+      </div>
+      <form class="inline actions" method="post" action="{{ url_for('ui.email_decide', mid=m.id) }}">{{ csrf() }}
+        <a class="btn small" href="{{ url_for('ui.email_detail', mid=m.id) }}">Review</a>
+        <button class="btn small primary" name="action" value="approve">Approve</button>
+        <button class="btn small ghost" name="action" value="discard">Discard</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endmacro %}
+
+{% macro task_form(contact_id=None, reply_id=None, title='', compact=False, quick_due=(), next_url='', date='') %}
+<form method="post" action="{{ url_for('ui.task_create') }}" class="{{ 'actions' if compact }}">{{ csrf() }}
+  {% if contact_id %}<input type="hidden" name="contact_id" value="{{ contact_id }}">{% endif %}
+  {% if reply_id %}<input type="hidden" name="reply_id" value="{{ reply_id }}">{% endif %}
+  <input type="hidden" name="next" value="{{ next_url }}">
+  {% if compact %}
+    <input type="text" name="title" value="{{ title or 'Follow up' }}" maxlength="200" style="width:auto;flex:1;min-width:160px" aria-label="Task">
+    {% for key, label, _ in quick_due %}<button class="btn small" name="quick" value="{{ key }}">{{ label }}</button>{% endfor %}
+  {% else %}
+    <div class="row">
+      <div class="field"><label for="task-title">What to do</label><input id="task-title" type="text" name="title" value="{{ title }}" maxlength="200" placeholder="Call back about pricing" required></div>
+      <div class="field"><label for="task-date">Day</label><input id="task-date" type="date" name="date" value="{{ date }}" required></div>
+      <div class="field"><label for="task-time">Time</label><input id="task-time" type="time" name="time" value="09:00"></div>
+    </div>
+    <div class="field"><label for="task-note">Note <span class="hint">optional</span></label><input id="task-note" type="text" name="note" maxlength="2000"></div>
+    <button class="btn primary">Add to calendar</button>
+  {% endif %}
+</form>
+{% endmacro %}

@@ -1,0 +1,170 @@
+# Homing: the mail server and the campaign service.
+# Settings live in homing.env; ./install.sh creates it.
+
+services:
+
+  redis:
+    image: redis:alpine
+    restart: always
+    volumes:
+      - "./data/redis:/data"
+    depends_on:
+      - resolver
+    dns:
+      - ${RESOLVER_IP:-192.168.203.254}
+
+  # Web proxy and mail front door
+  front:
+    image: ${MAIL_IMAGES:-ghcr.io/mailu}/nginx:${MAIL_VERSION:-2024.06}
+    restart: always
+    env_file: homing.env
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "25:25"
+      - "465:465"
+      - "587:587"
+      - "993:993"
+      - "4190:4190"
+    networks:
+      - default
+      - webmail
+    volumes:
+      - "./data/certs:/certs"
+      - "./overrides/nginx:/overrides:ro"
+      # Brand logo and favicons, served at the site root.
+      - "../branding/static:/static:ro"
+    depends_on:
+      - resolver
+    dns:
+      - ${RESOLVER_IP:-192.168.203.254}
+
+  resolver:
+    image: ${MAIL_IMAGES:-ghcr.io/mailu}/unbound:${MAIL_VERSION:-2024.06}
+    env_file: homing.env
+    logging: *logging
+    restart: always
+    networks:
+      default:
+        ipv4_address: ${RESOLVER_IP:-192.168.203.254}
+
+  admin:
+    image: ${MAIL_IMAGES:-ghcr.io/mailu}/admin:${MAIL_VERSION:-2024.06}
+    restart: always
+    env_file: homing.env
+    logging: *logging
+    volumes:
+      - "./data/admin:/data"
+      - "./data/dkim:/dkim"
+      # Brand-driven templates from this repository replace the stock ones.
+      - "../branding/mail-admin/base.html:/app/mailu/ui/templates/base.html:ro"
+      - "../branding/mail-admin/sidebar.html:/app/mailu/ui/templates/sidebar.html:ro"
+      - "../branding/mail-admin/base_sso.html:/app/mailu/sso/templates/base_sso.html:ro"
+      - "../branding/mail-admin/sidebar_sso.html:/app/mailu/sso/templates/sidebar_sso.html:ro"
+    depends_on:
+      - redis
+      - resolver
+    dns:
+      - ${RESOLVER_IP:-192.168.203.254}
+
+  imap:
+    image: ${MAIL_IMAGES:-ghcr.io/mailu}/dovecot:${MAIL_VERSION:-2024.06}
+    restart: always
+    env_file: homing.env
+    logging: *logging
+    volumes:
+      - "./data/mail:/mail"
+      - "./overrides/dovecot:/overrides:ro"
+    depends_on:
+      - front
+      - resolver
+    dns:
+      - ${RESOLVER_IP:-192.168.203.254}
+
+  smtp:
+    image: ${MAIL_IMAGES:-ghcr.io/mailu}/postfix:${MAIL_VERSION:-2024.06}
+    restart: always
+    env_file: homing.env
+    logging: *logging
+    volumes:
+      - "./data/mailqueue:/queue"
+      - "./overrides/postfix:/overrides:ro"
+    depends_on:
+      - front
+      - resolver
+    dns:
+      - ${RESOLVER_IP:-192.168.203.254}
+
+  antispam:
+    image: ${MAIL_IMAGES:-ghcr.io/mailu}/rspamd:${MAIL_VERSION:-2024.06}
+    hostname: antispam
+    restart: always
+    env_file: homing.env
+    logging: *logging
+    volumes:
+      - "./data/filter:/var/lib/rspamd"
+      - "./overrides/rspamd:/overrides:ro"
+    depends_on:
+      - front
+      - redis
+      - resolver
+    dns:
+      - ${RESOLVER_IP:-192.168.203.254}
+
+  webmail:
+    image: ${MAIL_IMAGES:-ghcr.io/mailu}/webmail:${MAIL_VERSION:-2024.06}
+    restart: always
+    env_file: homing.env
+    logging: *logging
+    volumes:
+      - "./data/webmail:/data"
+      - "./overrides/roundcube:/overrides:ro"
+    networks:
+      - webmail
+    depends_on:
+      - front
+
+  # Campaigns: web interface, tracking endpoints and API
+  campaigns: &campaigns
+    build: ../campaigns
+    image: local/campaigns:latest
+    restart: always
+    env_file: homing.env
+    environment:
+      CAMPAIGNS_AUTH: proxy
+      CAMPAIGNS_DATA: /data
+    logging: *logging
+    volumes:
+      - "./data/campaigns:/data"
+      # DKIM keys, read-only, so the domain page can show the exact DNS value.
+      - "./data/dkim:/dkim:ro"
+    depends_on:
+      - front
+      - smtp
+      - antispam
+    dns:
+      - ${RESOLVER_IP:-192.168.203.254}
+
+  # Campaigns: the one process that sends mail and reads the bounce mailbox
+  campaigns-worker:
+    <<: *campaigns
+    command: ["python", "-m", "app.worker"]
+    healthcheck:
+      disable: true
+    depends_on:
+      - campaigns
+
+networks:
+  default:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: ${SUBNET:-192.168.203.0/24}
+  webmail:
+    driver: bridge

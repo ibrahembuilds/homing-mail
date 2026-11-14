@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}{{ ui.lead_name(c) }}{% endblock %}
+{% block body %}
+<div class="head">
+  <div>
+    <div class="crumb"><a href="{{ url_for('ui.leads') }}">Leads</a> /</div>
+    <h1>{{ ui.lead_name(c) }}</h1>
+    <div class="sub"><span class="mono">{{ c.email }}</span>{% if company %} · {{ company }}{% endif %}</div>
+  </div>
+  <div class="actions">{{ ui.badge(c.lead_status) }}{% if suppressed %}{{ ui.badge('unsubscribed', 'not emailed: ' ~ suppressed.reason) }}{% endif %}
+    {% if c.verify_status %}{{ ui.badge(c.verify_status, 'address ' ~ c.verify_status) }}{% endif %}</div>
+</div>
+
+<div class="grid side-right">
+  <div>
+    <section class="card">
+      <h2>Everything with {{ c.first_name or 'this lead' }}</h2>
+      {% if thread %}
+      <div class="thread">
+        {% for item in thread %}{% set m = item.row %}
+          {% if item.kind == 'out' %}
+          <div class="mail out">
+            <div class="meta"><strong>You</strong><span>{{ item.at|dt }}</span>
+              {% if m.campaign_name %}<span>{{ m.campaign_name }}{% if m.step %} · follow-up {{ m.step }}{% endif %}</span>{% endif %}
+              {{ ui.badge(m.status) }}{% if m.opened_at %}{{ ui.badge('opened') }}{% endif %}{% if m.clicked_at %}{{ ui.badge('clicked') }}{% endif %}</div>
+            <div class="text"><a href="{{ url_for('ui.email_detail', mid=m.id) }}"><strong>{{ m.subject or 'Not sent yet' }}</strong></a>
+              {% if item.text %}<div class="muted small" style="margin-top:4px">{{ item.text|truncate(400) }}</div>{% endif %}</div>
+          </div>
+          {% else %}
+          <div class="mail">
+            <div class="meta"><strong>{{ c.first_name or m.from_email }}</strong><span>{{ item.at|dt }}</span>{% if m.category %}{{ ui.badge(m.category) }}{% endif %}
+              <a href="{{ url_for('ui.inbox_reply', reply_id=m.id) }}">Open</a></div>
+            <div class="text">{{ m.body|truncate(600) }}</div>
+          </div>
+          {% endif %}
+        {% endfor %}
+      </div>
+      {% else %}
+      {{ ui.empty('Nothing sent yet', 'Emails to and from this lead will show here.') }}
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Follow-ups</h2>
+      {% if tasks %}
+      <ul class="checklist" style="margin-bottom:14px">
+        {% for t in tasks %}
+        <li>
+          <span class="dot {{ 'done' if t.done_at }}">{{ '✓' if t.done_at }}</span>
+          <div style="flex:1"><span class="{{ 'muted' if t.done_at }}">{{ t.title }}</span>{% if t.note %}<div class="muted tiny">{{ t.note }}</div>{% endif %}</div>
+          <span class="num small {{ 'muted' if t.done_at else ('' if t.due_at > now_ts else 'bad') }}" style="{{ 'color:var(--bad)' if not t.done_at and t.due_at < now_ts }}">{{ t.due_at|dt('%d %b %H:%M') }}</span>
+          <form class="inline" method="post" action="{{ url_for('ui.task_update', task_id=t.id) }}">{{ ui.csrf() }}
+            {% if t.done_at %}<button class="btn small ghost" name="action" value="undo">Undo</button>
+            {% else %}<button class="btn small" name="action" value="done">Done</button>{% endif %}
+          </form>
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      {{ ui.task_form(contact_id=c.id, title='Follow up with ' ~ (c.first_name or c.email), compact=True, quick_due=quick_due, next_url=request.path) }}
+      <details style="margin-top:12px"><summary class="small" style="cursor:pointer">Pick a day and time</summary>
+        <div style="margin-top:12px">{{ ui.task_form(contact_id=c.id, title='Follow up with ' ~ (c.first_name or c.email), next_url=request.path) }}</div>
+      </details>
+    </section>
+  </div>
+
+  <aside>
+    <section class="card">
+      <h2>Stage and notes</h2>
+      <form method="post">{{ ui.csrf() }}
+        <div class="field"><label for="lead_status">Stage <span class="hint">anything past "contacted" stops automatic follow-ups</span></label>
+          <select id="lead_status" name="lead_status">
+            {% for key, label in statuses %}<option value="{{ key }}" {{ 'selected' if c.lead_status == key }}>{{ label }}</option>{% endfor %}
+          </select></div>
+        <div class="field"><label for="notes">Notes <span class="hint">only you see these</span></label>
+          <textarea id="notes" name="notes" rows="5">{{ c.notes }}</textarea></div>
+        <button class="btn primary">Save</button>
+      </form>
+    </section>
+    <section class="card" id="news">
+      <h2>Latest news{% if news_company %} <span class="muted small">about {{ news_company }}</span>{% endif %}</h2>
+      {% if not news_company %}
+      <p class="muted small" style="margin:0">Add a company or website column to this lead to search its news.</p>
+      {% elif headlines is none %}
+      <p class="muted small">Recent headlines help you (and the AI) write something personal.</p>
+      <a class="btn" href="{{ url_for('ui.lead', contact_id=c.id, news=1) }}#news"><svg><use href="#i-search"/></svg>Find latest news</a>
+      {% elif news_error %}<div class="notice bad small">{{ news_error }}</div>
+      {% elif not headlines %}<p class="muted small" style="margin:0">No news in the last 60 days.</p>
+      {% else %}
+      <ul class="news-list">
+        {% for h in headlines %}<li><a href="{{ h.url }}" target="_blank" rel="noopener noreferrer">{{ h.title }}</a>
+          <span class="muted small">{{ h.source }}{% if h.date %} · {{ h.date|ago }}{% endif %}</span></li>{% endfor %}
+      </ul>
+      {% endif %}
+    </section>
+    <section class="card">
+      <h2>Details</h2>
+      {% for key, value in extra.items() %}<div class="small" style="margin-bottom:4px"><span class="muted">{{ key|replace('_', ' ') }}:</span> {{ value }}</div>{% else %}<p class="muted small">No other columns in the upload.</p>{% endfor %}
+      {% if lists %}<p class="small" style="margin-top:10px"><span class="muted">In lists:</span> {% for l in lists %}<a href="{{ url_for('ui.list_detail', list_id=l.id) }}">{{ l.name }}</a>{{ ', ' if not loop.last }}{% endfor %}</p>{% endif %}
+    </section>
+  </aside>
+</div>
+{% endblock %}

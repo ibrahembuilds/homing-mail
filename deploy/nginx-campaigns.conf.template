@@ -1,0 +1,57 @@
+# Routes for the campaign service. install.sh copies this to
+# overrides/nginx/campaigns.conf with the shared secret filled in; the proxy
+# includes that file inside its main server block.
+#
+# "^~" stops the proxy's regular-expression routes from taking these paths.
+
+set $campaigns campaigns:8080;
+
+# Open pixel, click redirect, unsubscribe: reached from inside emails, no login.
+location ^~ /campaigns/t/ {
+    include /etc/nginx/proxy.conf;
+    proxy_set_header X-Proxy-Auth "";
+    proxy_pass http://$campaigns;
+}
+
+# Developer API: the service checks the API key itself.
+location ^~ /campaigns/api/ {
+    include /etc/nginx/proxy.conf;
+    proxy_set_header X-Proxy-Auth "";
+    client_max_body_size 45m;
+    proxy_pass http://$campaigns;
+}
+
+# Stylesheet and script, also used by the public unsubscribe page. Their URLs
+# change with their content, so browsers may keep them for a year.
+location ^~ /campaigns/static/ {
+    include /etc/nginx/proxy.conf;
+    proxy_set_header X-Proxy-Auth "";
+    expires 1y;
+    add_header Cache-Control "public, immutable";
+    gzip on;
+    gzip_types text/css application/javascript;
+    proxy_pass http://$campaigns;
+}
+
+location = /campaigns/health {
+    access_log off;
+    proxy_set_header X-Proxy-Auth "";
+    proxy_pass http://$campaigns;
+}
+
+location = /campaigns {
+    return 301 /campaigns/;
+}
+
+# Everything else is the operator interface: global administrators only.
+location ^~ /campaigns/ {
+    auth_request /internal/auth/admin;
+    error_page 403 @sso_login;
+    include /etc/nginx/proxy.conf;
+    proxy_set_header X-Proxy-Auth "__PROXY_SECRET__";
+    proxy_read_timeout 320s;
+    client_max_body_size 70m;
+    gzip on;
+    gzip_types text/csv application/json;
+    proxy_pass http://$campaigns;
+}

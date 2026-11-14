@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}{{ r.subject or 'Reply' }}{% endblock %}
+{% block body %}
+<div class="head">
+  <div>
+    <div class="crumb"><a href="{{ url_for('ui.inbox') }}">Inbox</a> /</div>
+    <h1>{{ r.subject or '(no subject)' }}</h1>
+    <div class="sub">{{ r.from_name or r.from_email }} · <span class="mono small">{{ r.from_email }}</span> · {{ r.received_at|dt }}{% if campaign %} · reply to <a href="{{ url_for('ui.campaign', campaign_id=campaign.id) }}">{{ campaign.name }}</a>{% endif %}</div>
+  </div>
+  <form class="actions" method="post" action="{{ url_for('ui.inbox_act', reply_id=r.id) }}">{{ ui.csrf() }}
+    <button class="btn ghost" name="action" value="unread">Mark unread</button>
+    {% if r.handled_at %}<button class="btn" name="action" value="reopen">Reopen</button>
+    {% else %}<button class="btn" name="action" value="done">Done, no answer needed</button>{% endif %}
+  </form>
+</div>
+
+{% if r.category == 'unsubscribe' %}
+<div class="notice warn">This lead asked to stop receiving emails, so they are on the suppression list and get nothing more.
+  <form class="inline" method="post" action="{{ url_for('ui.inbox_act', reply_id=r.id) }}">{{ ui.csrf() }}<button class="btn small" name="action" value="resubscribe">They did not ask that: allow emails again</button></form></div>
+{% endif %}
+
+<div class="grid side-right">
+  <div>
+    <section class="card">
+      <div class="card-head"><h2>Conversation</h2>{% if r.summary %}<span class="muted small">AI summary: {{ r.summary }}</span>{% endif %}</div>
+      <div class="thread">
+        {% for item in thread %}{% set m = item.row %}
+          {% if item.kind == 'out' %}
+          <div class="mail out">
+            <div class="meta"><strong>You</strong><span>{{ item.at|dt }}</span><span>{{ m.subject }}</span>
+              {% if m.campaign_name %}<span>{{ m.campaign_name }}{% if m.step %} · follow-up {{ m.step }}{% endif %}</span>{% endif %}
+              {% if m.status != 'sent' %}{{ ui.badge(m.status) }}{% endif %}</div>
+            <div class="text">{{ item.text or ((m.payload|fromjson).get('text', '') if m.payload else '') }}</div>
+          </div>
+          {% else %}
+          <div class="mail">
+            <div class="meta"><strong>{{ m.from_name or m.from_email }}</strong><span>{{ item.at|dt }}</span>{% if m.category %}{{ ui.badge(m.category) }}{% endif %}</div>
+            <div class="text">{{ m.body }}</div>
+          </div>
+          {% endif %}
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="card" id="answer">
+      <h2>Answer</h2>
+      {% if draft and not session_draft and r.draft %}<p class="notice small"><svg class="inline-i"><use href="#i-spark"/></svg> The AI wrote this answer for you. Check it, change anything, then send.</p>{% endif %}
+      <form method="post" action="{{ url_for('ui.inbox_act', reply_id=r.id) }}">{{ ui.csrf() }}
+        <div class="field"><label for="text">Your reply <span class="hint">plain text, sent in the same email thread</span></label>
+          <textarea id="text" name="text" rows="9" placeholder="Write your answer…">{{ draft }}</textarea></div>
+        {% if ai_ready %}
+        <details style="margin-bottom:12px"><summary class="small" style="cursor:pointer">Tell the AI what to say <span class="hint">optional</span></summary>
+          <input type="text" name="wish" maxlength="1000" placeholder="e.g. offer a call on Thursday afternoon" style="margin-top:8px"></details>
+        {% endif %}
+        <div class="actions">
+          <button class="btn primary" name="action" value="send"><svg><use href="#i-send"/></svg>Send reply</button>
+          {% if ai_ready %}<button class="btn" name="action" value="draft" formnovalidate><svg><use href="#i-spark"/></svg>{{ 'Write again with AI' if draft else 'Write a draft with AI' }}</button>
+          {% else %}<span class="muted small">Add an AI key in Settings to get suggested answers.</span>{% endif %}
+        </div>
+        {% if draft and '[' in draft %}<p class="muted small" style="margin-top:8px">Fill in the parts in [square brackets] before sending.</p>{% endif %}
+      </form>
+    </section>
+  </div>
+
+  <aside>
+    <section class="card">
+      <h2>Lead</h2>
+      {% if contact %}
+      <p style="margin-bottom:4px"><a href="{{ url_for('ui.lead', contact_id=contact.id) }}"><strong>{{ ui.lead_name(contact) }}</strong></a></p>
+      <p class="muted small mono" style="margin-bottom:10px">{{ contact.email }}</p>
+      {% for key, value in extra.items() %}<div class="small"><span class="muted">{{ key|replace('_', ' ') }}:</span> {{ value }}</div>{% endfor %}
+      <form method="post" action="{{ url_for('ui.lead', contact_id=contact.id) }}" style="margin-top:12px">{{ ui.csrf() }}
+        <label for="lead_status">Stage</label>
+        <div class="actions"><select id="lead_status" name="lead_status" style="flex:1">
+          {% for key, label in statuses %}<option value="{{ key }}" {{ 'selected' if contact.lead_status == key }}>{{ label }}</option>{% endfor %}
+        </select><button class="btn small">Save</button></div>
+      </form>
+      {% else %}<p class="muted small">Not one of your leads.</p>{% endif %}
+      <form method="post" action="{{ url_for('ui.inbox_act', reply_id=r.id) }}" style="margin-top:12px">{{ ui.csrf() }}<input type="hidden" name="action" value="category">
+        <label for="category">Sorted as</label>
+        <div class="actions"><select id="category" name="category" style="flex:1">
+          {% for key in categories %}<option value="{{ key }}" {{ 'selected' if r.category == key }}>{{ ui.LABELS.get(key, key|replace('_', ' ')) if ui.LABELS is defined else key|replace('_', ' ') }}</option>{% endfor %}
+        </select><button class="btn small">Save</button></div>
+      </form>
+    </section>
+    <section class="card">
+      <h2>Follow up later</h2>
+      {% if tasks %}<ul class="checklist" style="margin-bottom:10px">{% for t in tasks %}<li class="small"><span class="num muted">{{ t.due_at|dt('%d %b') }}</span>{{ t.title }}</li>{% endfor %}</ul>{% endif %}
+      {{ ui.task_form(contact_id=r.contact_id, reply_id=r.id, title='Follow up with ' ~ (r.from_name or r.from_email), compact=True, quick_due=quick_due, next_url=request.path) }}
+    </section>
+  </aside>
+</div>
+{% endblock %}

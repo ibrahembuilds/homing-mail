@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Leads{% endblock %}
+{% block body %}
+<div class="head">
+  <div><h1>Leads</h1>
+    <div class="sub">Everyone you have uploaded, and how far each conversation has got.</div></div>
+  <div class="actions">
+    <a class="btn" href="{{ url_for('ui.finder') }}"><svg><use href="#i-search"/></svg>Find an email</a>
+    <a class="btn primary" href="{{ url_for('ui.lists') }}"><svg><use href="#i-upload"/></svg>Upload leads</a>
+  </div>
+</div>
+{{ ui.leads_tabs() }}
+
+<div class="pipeline">
+  {{ ui.tile('All', (counts.values()|sum)|num, '', '', url_for('ui.leads'), not status) }}
+  {% for key, label in statuses %}
+    {{ ui.tile(label, counts.get(key, 0)|num, '', '', url_for('ui.leads', status=key), status == key) }}
+  {% endfor %}
+</div>
+
+<section class="card flush">
+  <form class="filters" method="get">
+    {% if status %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
+    <input type="search" name="q" value="{{ q }}" placeholder="Search name, email, company" style="flex:1">
+    <button class="btn small">Search</button>
+  </form>
+  {% if rows %}
+  <div class="table-wrap"><table class="hover">
+    <thead><tr><th>Lead</th><th>Company</th><th>Stage</th><th>Last email</th><th>Last reply</th><th>Next follow-up</th></tr></thead>
+    <tbody>
+    {% for c in rows %}
+    <tr>
+      <td><a href="{{ url_for('ui.lead', contact_id=c.id) }}">{{ ui.lead_name(c) }}</a><div class="muted tiny mono">{{ c.email }}</div></td>
+      <td class="small">{{ c.company }}</td>
+      <td>{{ ui.badge(c.lead_status) }}{% if c.status != 'active' %} {{ ui.badge(c.status) }}{% endif %}</td>
+      <td class="small muted nowrap">{{ c.last_sent|ago if c.last_sent else '—' }}</td>
+      <td class="small nowrap">{{ c.last_reply|ago if c.last_reply else '—' }}</td>
+      <td class="small nowrap num {{ 'muted' if not c.next_task }}">{{ c.next_task|dt('%d %b') if c.next_task else '—' }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {{ ui.pager(page, pages, total, 'leads') }}
+  {% else %}
+  {{ ui.empty('No leads match' if q or status else 'No leads yet', '' if q or status else 'Upload a CSV or Excel file of leads to start.', None if q or status else url_for('ui.lists'), 'Upload leads') }}
+  {% endif %}
+</section>
+{% endblock %}

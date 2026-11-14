@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Lists & upload · Leads{% endblock %}
+{% block body %}
+<div class="head">
+  <div><h1>Leads</h1>
+    <div class="sub">Upload a file of leads; every column becomes something the email and the AI can use.</div></div>
+</div>
+{{ ui.leads_tabs() }}
+
+<section class="card" id="upload">
+  <h2>Upload leads</h2>
+  <form method="post" enctype="multipart/form-data">{{ ui.csrf() }}
+    <div class="row">
+      <div class="field"><label for="name">Name of this list</label><input id="name" type="text" name="name" required maxlength="120" placeholder="Dentists in Lisbon, March"></div>
+      <div class="field"><label for="description">Where they came from <span class="hint">optional</span></label><input id="description" type="text" name="description" maxlength="500" placeholder="Trade show sign-ups"></div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="file">File <span class="hint">CSV or Excel (.xlsx)</span></label>
+        <input id="file" type="file" name="file" accept=".csv,.tsv,.txt,.xlsx,text/csv,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+        <p class="hint" style="margin-top:6px">One row per lead with a column of email addresses. Columns called first name, last name or name are recognised; every other column (company, city, website…) becomes a merge tag like <code>{{ '{{company}}' }}</code>.</p>
+      </div>
+      <div class="field">
+        <label for="pasted">Or paste addresses</label>
+        <textarea id="pasted" name="pasted" rows="4" placeholder="one address per line, or CSV text with a header row"></textarea>
+      </div>
+    </div>
+    <label class="check"><input type="checkbox" name="consent" value="yes"> <span>I have a lawful reason to email these people: they opted in, or they are business contacts I may email where I live and they are relevant to my offer.
+      <span class="hint">Every email carries an unsubscribe link, and anyone who opts out is never emailed again. Bought or scraped lists bounce, get reported as spam and get your domain blocked.</span></span></label>
+    <button class="btn primary"><svg><use href="#i-upload"/></svg>Create list and upload</button>
+    <span class="hint" style="margin-left:8px">Leave the file empty to create an empty list.</span>
+  </form>
+</section>
+
+<section class="card flush">
+  <div class="card-head"><h2>Your lists</h2></div>
+  {% if lists %}
+  <div class="table-wrap"><table class="hover">
+    <thead><tr><th>List</th><th class="num">Active</th><th class="num">Unsubscribed</th><th class="num">Bounced</th><th class="num">Spam</th><th>Created</th><th></th></tr></thead>
+    <tbody>
+    {% for item in lists %}
+    <tr>
+      <td><a href="{{ url_for('ui.list_detail', list_id=item.row.id) }}"><strong>{{ item.row.name }}</strong></a>{% if item.row.description %}<div class="muted tiny">{{ item.row.description }}</div>{% endif %}</td>
+      <td class="num">{{ item.counts.active|num }}</td>
+      <td class="num">{{ item.counts.unsubscribed|num }}</td>
+      <td class="num">{{ item.counts.bounced|num }}</td>
+      <td class="num">{{ item.counts.complained|num }}</td>
+      <td class="nowrap muted small">{{ item.row.created_at|dt('%d %b %Y') }}</td>
+      <td class="right"><a class="btn small" href="{{ url_for('ui.list_detail', list_id=item.row.id) }}">Open</a></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}
+  {{ ui.empty('No lists yet', 'Use the form above to upload your first leads.') }}
+  {% endif %}
+</section>
+{% endblock %}

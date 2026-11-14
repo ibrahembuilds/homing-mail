@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Campaigns{% endblock %}
+{% block body %}
+<div class="head">
+  <div><h1>Campaigns</h1><div class="sub">A first email and its follow-ups, sent to a contact list over time.</div></div>
+  <div class="actions">
+    <a class="btn" href="{{ url_for('ui.agent_home') }}"><svg><use href="#i-spark"/></svg>Draft with AI</a>
+    <form class="inline" method="post" action="{{ url_for('ui.campaign_new') }}">{{ ui.csrf() }}<button class="btn primary"><svg><use href="#i-plus"/></svg>New campaign</button></form>
+  </div>
+</div>
+
+<div class="card flush">
+  {% if campaigns %}
+  <div class="table-wrap"><table class="campaign-table">
+    <tr><th>Campaign</th><th>Status</th><th class="num col-sm">Recipients</th><th class="num col-sm">Delivered</th><th class="num">Opened</th><th class="num col-md">Clicked</th><th class="num col-md">Bounced</th><th class="num col-md">Spam</th><th class="col-sm">When</th><th></th></tr>
+    {% for item in campaigns %}{% set c = item.row %}{% set s = item.stats %}
+    <tr>
+      <td>
+        <a href="{{ url_for('ui.campaign', campaign_id=c.id) }}"><strong>{{ c.name }}</strong></a>
+        <div class="muted small">{{ c.list_name or 'No list' }}{% if c.created_by == 'agent' %} · drafted by the agent{% endif %}</div>
+      </td>
+      <td>{{ ui.badge(c.status) }}{% if c.hold_reason and c.status in ('sending', 'paused') %}<div class="muted small">{{ c.hold_reason|truncate(60) }}</div>{% endif %}</td>
+      {% if s %}
+      <td class="num col-sm">{{ s.total|num }}</td><td class="num col-sm">{{ s.delivered|num }}</td><td class="num">{{ s.open_rate|pct }}</td>
+      <td class="num col-md">{{ s.click_rate|pct }}</td><td class="num col-md">{{ s.bounce_rate|pct }}</td><td class="num col-md">{{ s.complaint_rate|pct }}</td>
+      {% else %}<td class="num muted" colspan="6">Not sent yet</td>{% endif %}
+      <td class="nowrap muted small col-sm">
+        {% if c.status in ('scheduled', 'pending_approval') %}starts {{ c.scheduled_at|dt }}
+        {% elif c.finished_at %}finished {{ c.finished_at|dt('%d %b %Y') }}
+        {% elif c.started_at %}started {{ c.started_at|ago }}
+        {% else %}edited {{ c.updated_at|ago }}{% endif %}
+      </td>
+      <td class="right">
+        {% if c.status in ('sending', 'paused') %}<form class="inline" method="post" action="{{ url_for('ui.campaign_state', campaign_id=c.id) }}">{{ ui.csrf() }}
+          {% if c.status == 'sending' %}<button class="btn small icon" name="action" value="pause" title="Pause" aria-label="Pause {{ c.name }}"><svg><use href="#i-pause"/></svg></button>
+          {% else %}<button class="btn small icon" name="action" value="resume" title="Resume" aria-label="Resume {{ c.name }}"><svg><use href="#i-play"/></svg></button>{% endif %}
+        </form>{% else %}<a class="btn small" href="{{ url_for('ui.campaign', campaign_id=c.id) }}">{{ 'Edit' if c.status == 'draft' else 'Open' }}</a>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% else %}
+  <div class="empty"><strong>No campaigns yet</strong>Create one by hand, or open the AI agent and describe what you want to send.</div>
+  {% endif %}
+</div>
+{% endblock %}

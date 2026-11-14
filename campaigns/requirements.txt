@@ -1,0 +1,8 @@
+Flask>=3.0,<4
+requests>=2.31,<3
+dnspython>=2.4,<3
+anthropic>=2.0,<3
+cryptography>=42,<47
+openpyxl>=3.1,<4
+gunicorn>=22,<24
+tzdata>=2024.1

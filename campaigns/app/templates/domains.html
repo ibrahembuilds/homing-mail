@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Your domain{% endblock %}
+{% block body %}
+<div class="head">
+  <div><div class="eyebrow">Setup</div><h1>Connect your domain</h1>
+    <div class="sub">Add these records where your domain's DNS is managed (your registrar, Cloudflare…). Inbox providers check them before trusting your email.</div></div>
+  <form class="actions" method="get">
+    <input type="text" name="domain" value="{{ domain }}" placeholder="yourdomain.com" aria-label="Domain" style="width:220px">
+    <button class="btn">Check</button>
+  </form>
+</div>
+
+{% if not domain %}
+<section class="card">{{ ui.empty('Which domain do you send from?', 'Type it above, for example yourdomain.com.') }}</section>
+{% else %}
+<section class="card">
+  <div class="card-head"><h2>{{ domain }}</h2><span class="small"><strong class="num">{{ done }}</strong> of {{ records|length }} in place</span></div>
+  <div class="progress"><span style="width: {{ 100 * done / (records|length or 1) }}%"></span></div>
+  <p class="muted small" style="margin-top:8px">DNS changes usually show within minutes; some registrars take up to an hour. Reload this page to check again.</p>
+</section>
+
+{% for r in records %}
+<section class="card">
+  <div class="card-head">
+    <h2 style="margin:0">{{ {'a': 'Server address', 'mx': 'Receiving mail (MX)', 'spf': 'Allowed senders (SPF)', 'dkim': 'Signature key (DKIM)', 'dmarc': 'Policy (DMARC)'}[r.key] }}</h2>
+    {{ ui.badge({'ok': 'ok', 'missing': 'bad', 'different': 'warn', 'waiting': 'pending'}[r.state], {'ok': 'in place', 'missing': 'missing', 'different': 'different', 'waiting': 'not ready yet'}[r.state]) }}
+  </div>
+  <p class="muted small">{{ r.purpose }}</p>
+  {% if r.warning %}<div class="notice warn small">{{ r.warning }}</div>{% endif %}
+  {% if r.value %}
+  <div class="row" style="grid-template-columns: 90px minmax(0, 1.2fr) minmax(0, 2fr)">
+    <div><div class="eyebrow">Type</div><div class="mono">{{ r.type }}{% if r.priority %} <span class="muted">· priority {{ r.priority }}</span>{% endif %}</div></div>
+    <div><div class="eyebrow">Name / host</div><div class="copyable"><code id="n-{{ r.key }}">{{ r.name }}</code><button class="btn small" type="button" data-copy="#n-{{ r.key }}">Copy</button></div></div>
+    <div><div class="eyebrow">Value</div><div class="copyable"><code id="v-{{ r.key }}">{{ r.suggested or r.value }}</code><button class="btn small" type="button" data-copy="#v-{{ r.key }}">Copy</button></div></div>
+  </div>
+  {% if r.suggested %}<p class="small" style="margin-top:8px">You already have an SPF record. Replace it with the value above: it keeps everything in yours and adds this server. Do not add a second SPF record.</p>{% endif %}
+  {% endif %}
+  {% if r.found and r.state != 'ok' %}<p class="small muted" style="margin-top:8px">Found now: <span class="mono">{{ r.found|join(' | ')|truncate(200) }}</span></p>{% endif %}
+  {% if r.key == 'a' and r.type == 'A' %}<p class="small muted" style="margin-top:8px">Some DNS panels want only the first part of the name (for <span class="mono">{{ r.name }}</span>, just <span class="mono">{{ r.name.split('.')[0] }}</span>). On Cloudflare, set the record to <strong>DNS only</strong> (grey cloud).</p>{% endif %}
+</section>
+{% endfor %}
+
+<section class="card" id="cloudflare">
+  <h2>Using Cloudflare? Let this page add the records</h2>
+  <p class="small muted">Create an API token in Cloudflare (My Profile → API Tokens → Create Token → “Edit zone DNS”, limited to this domain) and paste it here.
+    Records that are missing are added; anything that already exists is left alone and listed for you to decide.</p>
+  <form method="post" class="actions" style="margin-bottom:12px">{{ ui.csrf() }}<input type="hidden" name="domain" value="{{ domain }}">
+    <input type="password" name="token" placeholder="{{ 'Saved. Paste a new token to replace it.' if has_cloudflare else 'Cloudflare API token' }}" autocomplete="off" style="flex:1;min-width:240px">
+    <button class="btn" name="action" value="cloudflare_token">{{ 'Replace token' if has_cloudflare else 'Save token' }}</button>
+  </form>
+  {% if has_cloudflare %}
+  <form method="post" class="actions">{{ ui.csrf() }}<input type="hidden" name="domain" value="{{ domain }}">
+    <button class="btn" name="action" value="cloudflare_plan">Show what would change</button>
+  </form>
+  {% endif %}
+  {% if plan %}
+  <div style="margin-top:14px">
+    <h3>Cloudflare zone {{ plan.zone.name }}</h3>
+    {% if plan.create %}
+    <p class="small">These will be <strong>added</strong>:</p>
+    <table><tbody>{% for r in plan.create %}<tr><td class="mono small">{{ r.type }}</td><td class="mono small">{{ r.name }}</td><td class="mono small" style="word-break:break-all">{{ r.value|truncate(90) }}</td></tr>{% endfor %}</tbody></table>
+    <form method="post" style="margin-top:12px">{{ ui.csrf() }}<input type="hidden" name="domain" value="{{ domain }}">
+      <button class="btn primary" name="action" value="cloudflare_apply" data-confirm="Add {{ plan.create|length }} DNS record{{ 's' if plan.create|length != 1 }} to {{ plan.zone.name }} at Cloudflare?">Add {{ plan.create|length }} record{{ 's' if plan.create|length != 1 }} at Cloudflare</button>
+    </form>
+    {% else %}<p class="small">Nothing to add.</p>{% endif %}
+    {% if plan.skip %}
+    <p class="small" style="margin-top:12px">Left alone:</p>
+    <ul class="small" style="padding-left:18px">{% for r in plan.skip %}<li><span class="mono">{{ r.type }} {{ r.name }}</span>: {{ r.reason }}</li>{% endfor %}</ul>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Two things only your VPS provider can do</h2>
+  <ul class="small" style="padding-left:18px;margin:0">
+    <li><strong>Reverse DNS (PTR):</strong> in your VPS provider's panel, set the reverse DNS of <span class="mono">{{ ip or 'your server IP' }}</span> to <span class="mono">{{ hostname or 'mail.' ~ domain }}</span>. Gmail and Outlook junk or refuse mail without it.</li>
+    <li><strong>Outgoing port 25:</strong> many providers block it on new servers. If nothing ever arrives, ask their support to open it.</li>
+  </ul>
+  {% if mail_server %}<p class="small muted" style="margin-top:10px">To send from another domain, add it first in <a href="{{ admin }}">Mail admin</a> → Mail domains, and create its DKIM key there.</p>{% endif %}
+</section>
+{% endif %}
+{% endblock %}

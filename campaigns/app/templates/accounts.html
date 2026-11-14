@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Email accounts{% endblock %}
+{% block body %}
+<div class="head">
+  <div><div class="eyebrow">Sending</div><h1>Email accounts</h1>
+    <div class="sub">The mailboxes your campaigns send from. Connect several and campaigns rotate between them, each staying under its own daily limit.</div></div>
+  {% if items %}<div class="actions"><a class="btn primary" href="{{ url_for('ui.accounts', add=1) }}#add"><svg class="i"><use href="#i-plus"/></svg>Add account</a></div>{% endif %}
+</div>
+
+{% if items %}
+<div class="tiles">
+  {{ ui.tile('Accounts sending', items|selectattr('row.active')|list|length, 'of ' ~ items|length ~ ' connected') }}
+  {{ ui.tile('Can send today', capacity|num, 'sum of the daily limits') }}
+  {{ ui.tile('Sent today', sent_today|num, 'from these accounts', 'warn' if capacity and sent_today >= capacity else '') }}
+</div>
+
+<section class="card flush">
+  {% for a in items %}{% set r = a.row %}
+  <div class="account {{ 'off' if not r.active }}" id="account-{{ r.id }}">
+    <div class="account-main">
+      <div class="account-id">
+        <span class="avatar">{{ r.email[0]|upper }}</span>
+        <div><strong>{{ r.email }}</strong>
+          <div class="small muted">{{ providers[r.provider].label }}{% if r.from_name %} · shows as “{{ r.from_name }}”{% endif %}</div></div>
+      </div>
+      <div class="account-state">
+        {% if not r.active %}{{ ui.badge('paused') }}{% elif r.status == 'ok' %}{{ ui.badge('ok', 'connected') }}{% elif r.status == 'error' %}{{ ui.badge('bad', 'sign-in failing') }}{% else %}{{ ui.badge('pending', 'not checked') }}{% endif %}
+        {{ ui.badge('warn', 'free address') if a.free }}
+      </div>
+      <div class="account-usage">
+        <div class="small"><span class="num">{{ a.sent_today }}</span> / {{ r.daily_limit }} today</div>
+        <div class="bar"><span style="width: {{ [a.sent_today * 100 / r.daily_limit, 100]|min }}%"></span></div>
+      </div>
+      <form method="post" action="{{ url_for('ui.account_update', mailbox_id=r.id) }}" class="account-actions">{{ ui.csrf() }}
+        <button class="btn small" name="action" value="test">Test sign-in</button>
+        {% if r.active %}<button class="btn small icon" name="action" value="pause" title="Pause" aria-label="Pause {{ r.email }}"><svg class="i"><use href="#i-pause"/></svg></button>
+        {% else %}<button class="btn small icon" name="action" value="resume" title="Resume" aria-label="Resume {{ r.email }}"><svg class="i"><use href="#i-play"/></svg></button>{% endif %}
+      </form>
+    </div>
+    {% if r.last_error %}<div class="notice bad small">{{ r.last_error }}</div>{% endif %}
+    {% for w in a.warnings %}<div class="notice warn small">{{ w }}</div>{% endfor %}
+    <details class="account-edit">
+      <summary class="small">Edit settings</summary>
+      <form method="post" action="{{ url_for('ui.account_update', mailbox_id=r.id) }}">{{ ui.csrf() }}
+        <div class="row">
+          <div class="field"><label>From name <span class="hint">blank = the campaign's</span></label><input type="text" name="from_name" value="{{ r.from_name }}" maxlength="120"></div>
+          <div class="field"><label>Emails per day</label><input type="number" name="daily_limit" value="{{ r.daily_limit }}" min="1" max="2000"></div>
+          <div class="field"><label>Password <span class="hint">blank keeps the saved one</span></label><input type="password" name="smtp_password" autocomplete="new-password" placeholder="••••••••"></div>
+        </div>
+        {% if r.smtp_host or r.provider != 'server' %}
+        <div class="row">
+          <div class="field"><label>SMTP server</label><input type="text" name="smtp_host" value="{{ r.smtp_host }}"></div>
+          <div class="field"><label>Port</label><input type="number" name="smtp_port" value="{{ r.smtp_port }}"></div>
+          <div class="field"><label>Security</label><select name="smtp_tls">{% for v, l in tls_modes %}<option value="{{ v }}" {{ 'selected' if r.smtp_tls == v }}>{{ l }}</option>{% endfor %}</select></div>
+          <div class="field"><label>Username</label><input type="text" name="smtp_user" value="{{ r.smtp_user }}"></div>
+        </div>
+        {% endif %}
+        <div class="row">
+          <div class="field"><label>IMAP server <span class="hint">for reading replies</span></label><input type="text" name="imap_host" value="{{ r.imap_host }}"></div>
+          <div class="field"><label>Port</label><input type="number" name="imap_port" value="{{ r.imap_port }}"></div>
+          <div class="field"><label>IMAP username <span class="hint">blank = the address</span></label><input type="text" name="imap_user" value="{{ r.imap_user }}"></div>
+        </div>
+        <div class="actions">
+          <button class="btn primary" name="action" value="save">Save and test</button>
+          <button class="btn danger" name="action" value="delete" data-confirm="Remove {{ r.email }}? Campaigns stop sending from it. Emails it already sent stay in the log.">Remove account</button>
+        </div>
+      </form>
+    </details>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+<section class="card" id="add" {{ '' if adding else 'hidden' }}>
+  <h2>{{ 'Connect your first email account' if not items else 'Add an email account' }}</h2>
+  <form method="post" action="{{ url_for('ui.account_add') }}" data-provider-form>{{ ui.csrf() }}
+    <div class="provider-picks" role="radiogroup" aria-label="Provider">
+      {% for key, p in providers.items() %}
+      <label class="provider-pick"><input type="radio" name="provider" value="{{ key }}" {{ 'checked' if loop.first }}
+        data-smtp-host="{{ p.smtp_host }}" data-smtp-port="{{ p.smtp_port }}" data-smtp-tls="{{ p.smtp_tls }}"
+        data-imap-host="{{ p.imap_host }}" data-imap-port="{{ p.imap_port }}" data-limit="{{ p.daily_limit }}"
+        data-help="{{ p.help }}"><span>{{ p.label }}</span></label>
+      {% endfor %}
+    </div>
+    <div class="notice small" data-provider-help>{{ providers['google'].help }}</div>
+    <div class="row">
+      <div class="field"><label for="acc-email">Email address</label><input id="acc-email" type="email" name="email" required placeholder="sam@yourdomain.com" autocomplete="off"></div>
+      <div class="field"><label for="acc-name">From name <span class="hint">optional</span></label><input id="acc-name" type="text" name="from_name" maxlength="120" placeholder="Sam Lee"></div>
+    </div>
+    <div class="row">
+      <div class="field" data-needs-password><label for="acc-pass">App password</label><input id="acc-pass" type="password" name="smtp_password" autocomplete="new-password" placeholder="16-letter app password"></div>
+      <div class="field"><label for="acc-limit">Emails per day <span class="hint">start low: 20–30 for a new mailbox</span></label><input id="acc-limit" type="number" name="daily_limit" value="30" min="1" max="2000"></div>
+    </div>
+    <details class="server-fields" data-server-fields>
+      <summary class="small">Server settings</summary>
+      <div class="row">
+        <div class="field"><label>SMTP server</label><input type="text" name="smtp_host" value="smtp.gmail.com" placeholder="smtp.example.com"></div>
+        <div class="field"><label>Port</label><input type="number" name="smtp_port" value="587"></div>
+        <div class="field"><label>Security</label><select name="smtp_tls">{% for v, l in tls_modes %}<option value="{{ v }}">{{ l }}</option>{% endfor %}</select></div>
+        <div class="field"><label>Username <span class="hint">blank = the address</span></label><input type="text" name="smtp_user" autocomplete="off"></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>IMAP server <span class="hint">reads replies; blank = don't</span></label><input type="text" name="imap_host" value="imap.gmail.com"></div>
+        <div class="field"><label>Port</label><input type="number" name="imap_port" value="993"></div>
+        <div class="field"><label>IMAP password <span class="hint">blank = same as above</span></label><input type="password" name="imap_password" autocomplete="new-password"></div>
+      </div>
+    </details>
+    <div class="actions" style="margin-top:14px">
+      <button class="btn primary"><svg class="i"><use href="#i-plus"/></svg>Connect and test</button>
+      {% if items %}<a class="btn" href="{{ url_for('ui.accounts') }}">Cancel</a>{% endif %}
+    </div>
+    <p class="hint" style="margin:10px 0 0">We only sign in to check the details; nothing is sent until a campaign uses the account. Passwords are kept on your server and never shown again.</p>
+  </form>
+</section>
+
+<section class="card guide">
+  <h2>Staying out of spam</h2>
+  <div class="guide-grid">
+    <div><h3>1. Prove the mail is yours</h3>
+      <p class="small">Every sending domain needs SPF, DKIM and DMARC records. Google and Yahoo refuse or junk mail without them. Google Workspace and Zoho give you the DKIM key in their admin panel; for this server, use <a href="{{ url_for('ui.domains') }}">Domain &amp; DNS</a>.</p></div>
+    <div><h3>2. Send from a look-alike domain</h3>
+      <p class="small">Buy a second domain (for example <span class="mono">getacme.com</span> next to <span class="mono">acme.com</span>) for cold email, so your main domain's reputation is never at risk. Point its website to your main site.</p></div>
+    <div><h3>3. Warm up and stay small</h3>
+      <p class="small">New mailboxes start at 10–20 emails a day and grow over 2–4 weeks. Keep each mailbox under 30–50 a day; for more volume add mailboxes, not emails per mailbox.</p></div>
+    <div><h3>4. Clean lists, plain emails</h3>
+      <p class="small">Verify addresses before sending (<a href="{{ url_for('ui.finder') }}">Find &amp; verify</a>): over 2% bounces hurts. Write short, plain text with at most one link, no images or attachments, and leave click tracking off.</p></div>
+    <div><h3>5. Watch complaints</h3>
+      <p class="small">Gmail's limit is 0.3% spam reports; aim under 0.1%. Every email here carries a one-click unsubscribe. Sign up your domain at <a href="https://postmaster.google.com" rel="noopener" target="_blank">Google Postmaster Tools</a> to see your reputation.</p></div>
+    <div><h3>About free addresses</h3>
+      <p class="small">Free Gmail, Outlook and Yahoo addresses can be connected (Gmail allows 500 emails a day), but providers watch them closely and they look less professional. Fine for testing and warm contacts; for outreach use a domain you own. Free domains (.tk, .ml and similar) are mostly blocked, so avoid them.</p></div>
+  </div>
+</section>
+{% endblock %}

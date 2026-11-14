@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Homing · brand sheet</title>
+<style>
+  @font-face { font-family: "Archivo"; src: url("../campaigns/app/static/fonts/archivo.woff2") format("woff2"); font-weight: 500 800; font-stretch: 62% 125%; }
+  @font-face { font-family: "Public Sans"; src: url("../campaigns/app/static/fonts/publicsans.woff2") format("woff2"); font-weight: 400 700; }
+  @font-face { font-family: "IBM Plex Mono"; src: url("../campaigns/app/static/fonts/plexmono-400.woff2") format("woff2"); font-weight: 400; }
+  :root { --iris: #5b3be8; --neck: #17a673; --night: #15132b; --paper: #f6f6fa; --ink: #1a1830; --ember: #e0613a; --muted: #5f5d76; --line: #e1e0ea; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Public Sans", system-ui, sans-serif; color: var(--ink); background: var(--paper); line-height: 1.55; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 32px 80px; }
+  h1, h2 { font-family: "Archivo", sans-serif; font-stretch: 112%; letter-spacing: -0.02em; margin: 0; }
+  h2 { font-size: 1.35rem; margin: 56px 0 6px; }
+  .lede { color: var(--muted); margin: 0 0 20px; max-width: 60ch; }
+  .mono { font-family: "IBM Plex Mono", monospace; font-size: 0.82rem; }
+  header { background: radial-gradient(900px 500px at 10% -20%, rgb(91 59 232 / 0.45), transparent 60%),
+                       radial-gradient(700px 420px at 105% 120%, rgb(23 166 115 / 0.35), transparent 60%), var(--night);
+           color: #fff; padding: 88px 0 72px; }
+  header .wrap { padding-bottom: 0; display: flex; align-items: center; gap: 28px; flex-wrap: wrap; }
+  header svg { width: 112px; height: 112px; flex: none; }
+  header h1 { font-size: 4.2rem; font-weight: 800; line-height: 1; }
+  header p { margin: 10px 0 0; font-size: 1.25rem; color: #c9c6e3; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .tile { border-radius: 16px; padding: 28px; border: 1px solid var(--line); background: #fff; display: grid; place-items: center; min-height: 180px; }
+  .tile.dark { background: var(--night); border-color: var(--night); }
+  .tile svg { width: 72px; height: 72px; }
+  .tile .word { display: flex; align-items: center; gap: 12px; font-family: "Archivo"; font-weight: 800; font-stretch: 112%; font-size: 2rem; letter-spacing: -0.02em; }
+  .tile .word svg { width: 44px; height: 44px; }
+  .caption { color: var(--muted); font-size: 0.85rem; margin-top: 8px; }
+  .swatch { border-radius: 16px; overflow: hidden; border: 1px solid var(--line); background: #fff; }
+  .swatch .chip { height: 110px; }
+  .swatch .meta { padding: 12px 14px; }
+  .swatch strong { display: block; }
+  .type { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 24px 28px; margin-bottom: 12px; display: grid; grid-template-columns: 180px 1fr; gap: 20px; align-items: baseline; }
+  .voice { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .voice div { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 20px 24px; }
+  .voice h3 { font-family: "Archivo"; margin: 0 0 8px; font-size: 1rem; }
+  .voice ul { margin: 0; padding-left: 18px; }
+  @media (max-width: 700px) { header h1 { font-size: 3rem; } .type, .voice { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="sheen" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5b3be8"/><stop offset="1" stop-color="#17a673"/></linearGradient>
+    <symbol id="mark" viewBox="0 0 64 64">
+      <rect width="64" height="64" rx="16" fill="url(#sheen)"/>
+      <g fill="#fff" opacity="0.9"><circle cx="17.6" cy="43.2" r="1.6"/><circle cx="20.8" cy="39.6" r="1.6"/><circle cx="24.6" cy="37.6" r="1.6"/></g>
+      <circle cx="15" cy="50" r="4" fill="#fff"/>
+      <path d="M51 13 12 30l16 5 7 17z" fill="#fff"/><path d="M51 13 28 35l7 17z" fill="#fff" opacity="0.7"/>
+    </symbol>
+    <symbol id="mark-mono" viewBox="0 0 64 64">
+      <rect width="64" height="64" rx="16" fill="currentColor"/>
+      <g fill="#fff"><circle cx="17.6" cy="43.2" r="1.6"/><circle cx="20.8" cy="39.6" r="1.6"/><circle cx="24.6" cy="37.6" r="1.6"/></g>
+      <circle cx="15" cy="50" r="4" fill="#fff"/>
+      <path d="M51 13 12 30l16 5 7 17z" fill="#fff"/><path d="M51 13 28 35l7 17z" fill="#fff" opacity="0.7"/>
+    </symbol>
+  </defs>
+</svg>
+
+<header>
+  <div class="wrap">
+    <svg aria-hidden="true"><use href="#mark"/></svg>
+    <div><h1>Homing</h1><p>Send outreach. Get replies back.</p></div>
+  </div>
+</header>
+
+<main class="wrap">
+  <h2>The idea</h2>
+  <p class="lede">Homing pigeons were the first reliable messengers: let one go and it finds its way home. Homing is built around the same promise. Your emails go out, and the replies come back to one inbox. The mark is a paper plane leaving home, and the dots are the route it remembers. The tile shades from iris to green, the sheen on a pigeon's neck.</p>
+
+  <h2>Logo</h2>
+  <p class="lede">Keep clear space of half the tile's width on every side. At favicon sizes (under 48 px) the dotted trail is dropped, leaving the plane and the home dot. Files are in <span class="mono">branding/static/</span>; regenerate them with <span class="mono">make_icons.py</span>.</p>
+  <div class="grid">
+    <div><div class="tile"><svg aria-label="Homing mark"><use href="#mark"/></svg></div><div class="caption">Mark · <span class="mono">logo.svg</span></div></div>
+    <div><div class="tile"><span class="word"><svg aria-hidden="true"><use href="#mark"/></svg>Homing</span></div><div class="caption">Wordmark · <span class="mono">logo-wordmark.svg</span></div></div>
+    <div><div class="tile dark"><span class="word" style="color:#fff"><svg aria-hidden="true"><use href="#mark"/></svg>Homing</span></div><div class="caption">On Night · <span class="mono">logo-wordmark-white.svg</span></div></div>
+    <div><div class="tile" style="color:var(--ink)"><svg aria-label="Homing mark, one colour"><use href="#mark-mono"/></svg></div><div class="caption">One colour, for print and stamps</div></div>
+  </div>
+
+  <h2>Colour</h2>
+  <p class="lede">Iris is the action colour: buttons, links, the active tab. Neck green appears only in the logo sheen and in success states. Night is the app's sidebar and sign-in page.</p>
+  <div class="grid">
+    <div class="swatch"><div class="chip" style="background:var(--iris)"></div><div class="meta"><strong>Iris</strong><span class="mono">#5B3BE8</span></div></div>
+    <div class="swatch"><div class="chip" style="background:var(--neck)"></div><div class="meta"><strong>Neck green</strong><span class="mono">#17A673</span></div></div>
+    <div class="swatch"><div class="chip" style="background:var(--night)"></div><div class="meta"><strong>Night</strong><span class="mono">#15132B</span></div></div>
+    <div class="swatch"><div class="chip" style="background:var(--ink)"></div><div class="meta"><strong>Ink</strong><span class="mono">#1A1830</span></div></div>
+    <div class="swatch"><div class="chip" style="background:var(--paper)"></div><div class="meta"><strong>Paper</strong><span class="mono">#F6F6FA</span></div></div>
+    <div class="swatch"><div class="chip" style="background:var(--ember)"></div><div class="meta"><strong>Ember</strong><span class="mono">#E0613A</span> · follow-ups</div></div>
+  </div>
+
+  <h2>Type</h2>
+  <p class="lede">All three faces are bundled with the app under the SIL Open Font License, so nothing loads from a third party.</p>
+  <div class="type"><span class="mono">Archivo 800, 112% wide<br>headings, logo</span><span style="font-family:Archivo;font-weight:800;font-stretch:112%;font-size:2.4rem;letter-spacing:-0.02em">Replies are the point.</span></div>
+  <div class="type"><span class="mono">Public Sans 400–600<br>interface, body</span><span style="font-size:1.1rem">Upload your leads, write one good email, and let follow-ups go out by themselves until someone answers.</span></div>
+  <div class="type"><span class="mono">IBM Plex Mono<br>numbers, data, labels</span><span class="mono" style="font-size:1.05rem">3 of 3 sent · 41.2% opened · 2 replies</span></div>
+
+  <h2>Voice</h2>
+  <div class="voice">
+    <div><h3>We say</h3><ul><li>Send test</li><li>Paused by you. Resume when ready.</li><li>No replies yet. They show up here as soon as they arrive.</li></ul></div>
+    <div><h3>We don't say</h3><ul><li>Execute dispatch</li><li>Oops! Something went wrong 😬</li><li>10x your pipeline with AI-powered growth hacks</li></ul></div>
+  </div>
+</main>
+</body>
+</html>

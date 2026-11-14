@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Email log{% endblock %}
+{% block body %}
+<div class="head">
+  <div><h1>Analytics</h1><div class="sub">Every message this server was asked to send, with what happened to it.</div></div>
+</div>
+{{ ui.analytics_tabs() }}
+<div class="card flush">
+  <form class="filters" method="get">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search recipient or subject">
+    <select name="status">
+      <option value="">Any result</option>
+      {% for value, label in (('sent', 'Sent'), ('opened', 'Opened'), ('clicked', 'Clicked'), ('bounced', 'Bounced'), ('complained', 'Marked as spam'), ('failed', 'Failed'), ('queued', 'Waiting'), ('pending_approval', 'Needs approval'), ('cancelled', 'Skipped')) %}
+      <option value="{{ value }}" {{ 'selected' if status == value }}>{{ label }}</option>{% endfor %}
+    </select>
+    <select name="kind">
+      <option value="">Any source</option>
+      {% for value, label in (('campaign', 'Campaigns'), ('api', 'API'), ('agent', 'AI agent'), ('test', 'Tests')) %}
+      <option value="{{ value }}" {{ 'selected' if kind == value }}>{{ label }}</option>{% endfor %}
+    </select>
+    <button class="btn small">Filter</button>
+  </form>
+  {% if rows %}
+  <div class="table-wrap"><table>
+    <tr><th>To</th><th>Subject</th><th>Source</th><th>Result</th><th>Activity</th><th>When</th></tr>
+    {% for m in rows %}
+    <tr>
+      <td><a href="{{ url_for('ui.email_detail', mid=m.id) }}">{{ m.to_email }}</a></td>
+      <td>{{ m.subject|truncate(60) }}</td>
+      <td class="small muted">{{ m.campaign_name or {'api': 'API', 'agent': 'AI agent', 'test': 'Test'}.get(m.kind, m.kind) }}</td>
+      <td>{{ ui.badge(m.status, {'cancelled': 'skipped', 'queued': 'waiting'}.get(m.status)) }}</td>
+      <td class="small">
+        {% if m.opened_at %}{{ ui.badge('opened', 'opened' ~ ('' if m.human_open else ' (auto)')) }}{% endif %}
+        {% if m.clicked_at %}{{ ui.badge('clicked') }}{% endif %}
+        {% if m.unsubscribed_at %}{{ ui.badge('unsubscribed') }}{% endif %}
+      </td>
+      <td class="nowrap muted small">{{ (m.sent_at or m.created_at)|dt }}</td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {{ ui.pager(page, pages, total, 'emails') }}
+  {% else %}
+  <div class="empty"><strong>No emails match</strong>Emails appear here as soon as a campaign starts or the API is used.</div>
+  {% endif %}
+</div>
+{% endblock %}

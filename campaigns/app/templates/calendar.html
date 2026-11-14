@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Calendar{% endblock %}
+{% block body %}
+<div class="head">
+  <div><div class="eyebrow">Follow-ups and sends</div><h1>{{ month_name }}</h1>
+    <div class="sub">Your follow-up tasks, scheduled campaigns, and when automatic follow-ups will go out.</div></div>
+  <div class="actions">
+    <a class="btn" href="?month={{ prev_month }}" aria-label="Previous month">←</a>
+    <a class="btn" href="?">Today</a>
+    <a class="btn" href="?month={{ next_month }}" aria-label="Next month">→</a>
+  </div>
+</div>
+
+{% if overdue %}
+<div class="notice warn"><h3>{{ overdue|length }} follow-up{{ 's' if overdue|length != 1 }} overdue</h3>
+  <ul class="checklist">{% for t in overdue %}
+    <li><span class="num small" style="width:84px;color:var(--bad)">{{ t.due_at|dt('%d %b') }}</span>
+      <span style="flex:1">{% if t.contact_id %}<a href="{{ url_for('ui.lead', contact_id=t.contact_id) }}">{{ t.title }}</a>{% else %}{{ t.title }}{% endif %}</span>
+      <form class="inline actions" method="post" action="{{ url_for('ui.task_update', task_id=t.id) }}">{{ ui.csrf() }}
+        <button class="btn small" name="action" value="done">Done</button><button class="btn small ghost" name="action" value="snooze_1">Tomorrow</button></form></li>
+  {% endfor %}</ul></div>
+{% endif %}
+
+<section class="card flush">
+    <div class="cal" role="grid" aria-label="{{ month_name }}">
+      {% for name in ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun') %}<div class="dow">{{ name }}</div>{% endfor %}
+      {% for week in weeks %}{% for d in week %}
+      <a class="day {{ 'out' if not d.in_month }} {{ 'today' if d.today }} {{ 'sel' if d.date == selected }}" href="?month={{ d.date.strftime('%Y-%m') }}&amp;day={{ d.date.isoformat() }}">
+        <span class="date"><b>{{ d.date.day }}</b>{% if d.sent or d.replies %}<span>{% if d.sent %}{{ d.sent }} sent{% endif %}{% if d.sent and d.replies %} · {% endif %}{% if d.replies %}{{ d.replies }} repl{{ 'y' if d.replies == 1 else 'ies' }}{% endif %}</span>{% endif %}</span>
+        {% for item in d['items'][:3] %}<span class="chip {{ item.kind }} {{ 'done' if item.done }}" title="{{ item.title }}">{{ item.title }}</span>{% endfor %}
+        {% if d['items']|length > 3 %}<span class="tiny muted">+{{ d['items']|length - 3 }} more</span>{% endif %}
+      </a>
+      {% endfor %}{% endfor %}
+    </div>
+    <div class="legend chart" style="padding:10px 14px"><div class="legend">
+      <span><i style="background:var(--ink)"></i>Your follow-up tasks</span>
+      <span><i style="background:var(--brand)"></i>Campaign starts</span>
+      <span><i style="background:var(--stamp)"></i>Automatic follow-ups (expected)</span></div></div>
+</section>
+
+<div class="grid three">
+    <section class="card">
+      <h2>{{ selected.strftime('%A %d %B') }}</h2>
+      {% if day_items %}
+      <ul class="checklist agenda">
+        {% for item in day_items %}
+        <li><span class="time">{{ item.at|dt('%H:%M') }}</span>
+          <span style="flex:1"><span class="chip {{ item.kind }} {{ 'done' if item.done }}" style="white-space:normal">{{ item.title }}</span></span>
+          {% if item.kind == 'task' %}
+            <form class="inline" method="post" action="{{ url_for('ui.task_update', task_id=item.id) }}">{{ ui.csrf() }}
+              {% if item.done %}<button class="btn small ghost" name="action" value="undo">Undo</button>{% else %}<button class="btn small" name="action" value="done">Done</button>{% endif %}</form>
+          {% elif item.kind in ('campaign', 'followup') %}<a class="btn small ghost" href="{{ url_for('ui.campaign', campaign_id=item.id) }}">Open</a>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}<p class="muted small">Nothing on this day.</p>{% endif %}
+    </section>
+    <section class="card">
+      <h2>Add a follow-up</h2>
+      {{ ui.task_form(title='', next_url=request.full_path, date=selected.isoformat()) }}
+    </section>
+    <section class="card" id="feed">
+      <h2>See this in Google Calendar or Outlook</h2>
+      <p class="small muted">Subscribe to this address and your follow-ups appear in your own calendar, updated every hour.</p>
+      <div class="copyable"><code id="feed-url">{{ feed_url }}</code><button class="btn small" type="button" data-copy="#feed-url">Copy</button></div>
+      <details style="margin-top:10px"><summary class="small" style="cursor:pointer">How to add it</summary>
+        <ul class="small" style="padding-left:18px;margin:8px 0 0">
+          <li><strong>Google Calendar:</strong> Other calendars → + → From URL → paste.</li>
+          <li><strong>Outlook:</strong> Add calendar → Subscribe from web → paste.</li>
+          <li><strong>Apple Calendar:</strong> File → New Calendar Subscription → paste.</li>
+        </ul>
+        <p class="small muted" style="margin-top:8px">Anyone with this address can see your follow-ups. If it leaks, make a new one:</p>
+        <form method="post" action="{{ url_for('ui.calendar_feed_reset') }}">{{ ui.csrf() }}<button class="btn small" data-confirm="Make a new address? The old one stops working.">Make a new address</button></form>
+      </details>
+    </section>
+</div>
+{% endblock %}

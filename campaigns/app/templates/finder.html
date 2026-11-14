@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Find & check emails{% endblock %}
+{% block body %}
+<div class="head">
+  <div><h1>Leads</h1>
+    <div class="sub">Find someone's address from their name and company, or check whether addresses you have will work.</div></div>
+  {% if not has_hunter %}<a class="btn" href="{{ url_for('ui.settings') }}#leadtools">Add a Hunter.io key for verified results</a>{% endif %}
+</div>
+{{ ui.leads_tabs() }}
+
+<section class="card" id="check">
+  <div class="card-head"><h2 style="margin:0">Check if an address works</h2>
+    <span class="hint">Nothing is sent to these addresses.</span></div>
+  <form method="post">{{ ui.csrf() }}<input type="hidden" name="action" value="check">
+    <div class="field"><label for="emails">Addresses <span class="hint">one or many (up to 50), any separator</span></label>
+      <textarea id="emails" name="emails" rows="3" placeholder="ana@acme.com, bob@gmial.com" required>{{ form.get('emails', '') }}</textarea></div>
+    <div class="actions">
+      <button class="btn primary">Check</button>
+      {% if has_hunter %}<label class="check" style="margin:0"><input type="checkbox" name="use_hunter" {{ 'checked' if not form or form.get('use_hunter') }}> <span class="small">Confirm each mailbox with Hunter.io <span class="hint">(uses one check each)</span></span></label>{% endif %}
+    </div>
+  </form>
+  {% if checked %}
+  <div class="table-wrap" style="margin-top:16px"><table>
+    <thead><tr><th>Address</th><th>Result</th><th>Why</th><th></th></tr></thead>
+    <tbody>
+    {% for r in checked %}
+    <tr>
+      <td class="mono small">{{ r.email }}{% if r.suggestion %}<div class="tiny" style="color:var(--warn)">did you mean <strong>{{ r.suggestion }}</strong>?</div>{% endif %}</td>
+      <td>{{ ui.badge({'valid': 'ok', 'risky': 'warn', 'invalid': 'bad', 'unknown': 'plain'}[r.verdict], {'valid': 'looks good', 'risky': 'risky', 'invalid': 'will bounce', 'unknown': 'unknown'}[r.verdict]) }}</td>
+      <td class="small">{% for c in r.checks if c.state != 'ok' %}<div class="{{ 'muted' if c.state == 'warn' }}" style="{{ 'color:var(--bad)' if c.state == 'bad' }}">{{ c.detail }}</div>{% else %}<span class="muted">{{ r.checks[-1].detail }}</span>{% endfor %}</td>
+      <td class="right">{% if r.verdict != 'invalid' %}<button class="btn small" type="button" data-fill="{{ r.suggestion or r.email }}">Use</button>{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  <p class="hint" style="margin-top:8px">“Looks good” means the format is right, the domain receives email and it is not a throwaway or system mailbox.{% if not has_hunter %} Whether the exact mailbox exists can only be confirmed with a Hunter.io key (Settings → Lead tools).{% endif %}</p>
+  {% endif %}
+</section>
+
+<div class="grid side-right">
+  <section class="card">
+    <h2>Find one person's address</h2>
+    <form method="post">{{ ui.csrf() }}
+      <div class="row">
+        <div class="field"><label for="first_name">First name</label><input id="first_name" type="text" name="first_name" value="{{ form.get('first_name', '') }}" required></div>
+        <div class="field"><label for="last_name">Last name</label><input id="last_name" type="text" name="last_name" value="{{ form.get('last_name', '') }}"></div>
+        <div class="field"><label for="domain">Company website</label><input id="domain" type="text" name="domain" value="{{ form.get('domain', '') }}" placeholder="acme.com" required></div>
+      </div>
+      <button class="btn primary"><svg><use href="#i-search"/></svg>Find</button>
+    </form>
+
+    {% if result %}
+    <div style="margin-top:18px">
+      {% if result.mail is sameas false %}<div class="notice bad">{{ result.note }}</div>
+      {% else %}
+        {% if result.mail is none %}<div class="notice warn">Could not check whether <span class="mono">{{ result.domain }}</span> receives email right now.</div>{% endif %}
+        {% if result.note %}<p class="muted small">{{ result.note }}</p>{% endif %}
+        {% if result.candidates %}
+        <table>
+          <thead><tr><th>Address</th><th>How sure</th><th>Why</th><th></th></tr></thead>
+          <tbody>
+          {% for cand in result.candidates %}
+          <tr>
+            <td class="mono small">{{ cand.email }}</td>
+            <td>{{ ui.badge({'high': 'ok', 'medium': 'warn', 'low': 'plain'}[cand.confidence], cand.confidence) }}</td>
+            <td class="small muted">{{ cand.source }}{% if cand.score %} · score {{ cand.score }}{% endif %}{% if cand.status not in ('unverified', 'unknown') %} · {{ cand.status }}{% endif %}</td>
+            <td class="right"><button class="btn small" type="button" data-fill="{{ cand.email }}">Use</button></td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+      {% endif %}
+    </div>
+    {% endif %}
+  </section>
+
+  <aside>
+    <section class="card">
+      <h2>Add to a list</h2>
+      <form method="post" action="{{ url_for('ui.finder_add') }}" id="add-form">{{ ui.csrf() }}
+        <div class="field"><label for="add-email">Email</label><input id="add-email" type="email" name="email" required></div>
+        <input type="hidden" name="first_name" value="{{ form.get('first_name', '') }}">
+        <input type="hidden" name="last_name" value="{{ form.get('last_name', '') }}">
+        <input type="hidden" name="domain" value="{{ form.get('domain', '') }}">
+        <div class="field"><label for="add-company">Company <span class="hint">optional</span></label><input id="add-company" type="text" name="company"></div>
+        <div class="field"><label for="add-list">List</label>
+          <select id="add-list" name="list_id" required><option value="">Choose a list</option>{% for l in lists %}<option value="{{ l.id }}">{{ l.name }}</option>{% endfor %}</select></div>
+        <label class="check"><input type="checkbox" name="consent" value="yes" required> <span class="small">I have a lawful reason to email this person.</span></label>
+        <button class="btn primary">Add lead</button>
+      </form>
+    </section>
+    <section class="card">
+      <h2>How this works</h2>
+      <p class="small">The finder checks that the company's domain receives email, then lists the address patterns companies use most, putting first any pattern already used by your other leads at that company.</p>
+      <p class="small">{% if has_hunter %}Your Hunter.io key adds a verified result with a confidence score.{% else %}Guesses are <strong>not verified</strong>: sending to wrong addresses causes bounces, which hurt your sending reputation. A Hunter.io key (free plan available) adds verified results.{% endif %}</p>
+      <p class="small muted">This tool never tests addresses by connecting to other mail servers. Providers treat that as address harvesting and block the server that does it.</p>
+    </section>
+    {% if has_hunter %}
+    <section class="card">
+      <h2>Everyone at a company</h2>
+      <form method="post">{{ ui.csrf() }}<input type="hidden" name="action" value="company">
+        <div class="field"><label for="company-domain">Company website</label><input id="company-domain" type="text" name="domain" placeholder="acme.com" required></div>
+        <button class="btn">Search with Hunter.io</button>
+      </form>
+    </section>
+    {% endif %}
+  </aside>
+</div>
+
+{% if people %}
+<section class="card flush">
+  <div class="card-head"><h2>People found at {{ people.organization or form.get('domain') }}</h2>{% if people.pattern %}<span class="muted small">Usual pattern: <code>{{ people.pattern }}</code></span>{% endif %}</div>
+  {% if people.people %}
+  <div class="table-wrap"><table class="hover">
+    <thead><tr><th>Name</th><th>Role</th><th>Email</th><th class="num">Confidence</th><th></th></tr></thead>
+    <tbody>
+    {% for p in people.people %}
+    <tr><td>{{ p.first_name }} {{ p.last_name }}</td><td class="small">{{ p.position }}</td><td class="mono small">{{ p.email }}</td><td class="num">{{ p.confidence or '' }}</td>
+      <td class="right"><button class="btn small" type="button" data-fill="{{ p.email }}">Use</button></td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}{{ ui.empty('Nobody found', 'Hunter.io has no public addresses for this domain.') }}{% endif %}
+</section>
+{% endif %}
+{% endblock %}
