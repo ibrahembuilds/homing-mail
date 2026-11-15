@@ -245,8 +245,9 @@ def ensure_rows(db, campaign):
     return db.run(
         "INSERT OR IGNORE INTO personalizations (campaign_id, contact_id, status, updated_at) "
         "SELECT ?, c.id, 'pending', ? FROM list_members m JOIN contacts c ON c.id = m.contact_id "
-        "WHERE m.list_id = ? AND c.status = 'active' AND c.verify_status != 'invalid'",
-        campaign['id'], now(), campaign['list_id']).rowcount
+        "WHERE m.list_id = ? AND c.status = 'active' AND c.verify_status != 'invalid' "
+        "AND c.id NOT IN (SELECT contact_id FROM campaign_skips WHERE campaign_id = ?)",
+        campaign['id'], now(), campaign['list_id'], campaign['id']).rowcount
 
 
 def invalidate(db, campaign_id):

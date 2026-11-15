@@ -348,8 +348,10 @@ def _insert_members(db, campaign, ts):
         "lower(substr(c.email, instr(c.email, '@') + 1)), ?, ?, 'queued', ? "
         "FROM list_members m JOIN contacts c ON c.id = m.contact_id "
         f"WHERE m.list_id = ? AND c.status = 'active' AND c.verify_status NOT IN ({', '.join('?' for _ in skipped)}) "
-        "AND c.email NOT IN (SELECT email FROM suppressions) ORDER BY m.added_at, c.id",
-        campaign['id'], campaign['from_email'], campaign['subject'], ts, campaign['list_id'], *skipped).rowcount
+        "AND c.email NOT IN (SELECT email FROM suppressions) "
+        "AND c.id NOT IN (SELECT contact_id FROM campaign_skips WHERE campaign_id = ?) ORDER BY m.added_at, c.id",
+        campaign['id'], campaign['from_email'], campaign['subject'], ts, campaign['list_id'], *skipped,
+        campaign['id']).rowcount
 
 
 def add_late_members(db, campaign):

@@ -422,6 +422,15 @@ MIGRATIONS = [
     """
     ALTER TABLE offers ADD COLUMN case_studies TEXT NOT NULL DEFAULT ''
     """,
+    # 9: leads the owner left out of one campaign
+    """
+    CREATE TABLE campaign_skips (
+        campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+        contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+        created_at REAL NOT NULL,
+        PRIMARY KEY (campaign_id, contact_id)
+    )
+    """,
 ]
 
 # What the columns above hold:

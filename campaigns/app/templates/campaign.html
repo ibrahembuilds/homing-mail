@@ -59,6 +59,7 @@
     </div>
   </div>
   <form class="actions" method="post" action="{{ url_for('ui.campaign_state', campaign_id=c.id) }}">{{ ui.csrf() }}
+    {% if c.list_id %}<a class="btn" href="{{ url_for('ui.campaign_review', campaign_id=c.id) }}"><svg aria-hidden="true"><use href="#i-mail"/></svg>Review emails</a>{% endif %}
     {% if c.status == 'pending_approval' %}<button class="btn primary" name="action" value="approve">Approve and schedule</button><button class="btn" name="action" value="unschedule">Back to draft</button>{% endif %}
     {% if c.status == 'sending' %}<button class="btn" name="action" value="pause">Pause</button>{% endif %}
     {% if c.status == 'paused' %}<button class="btn primary" name="action" value="resume">Resume</button>{% endif %}
@@ -235,7 +236,7 @@
 
     <div class="mode-box" data-when-mode="own" {{ 'hidden' if c.ai_mode != 'own' }}>
       {% if own %}<p class="own-count"><strong class="num">{{ own.own }}</strong> of <span class="num">{{ own.total }}</span> leads have their own email{% if own.own < own.total %}; the other {{ own.total - own.own }} get the email above{% endif %}.
-        {% if own.total %}<a href="{{ url_for('ui.campaign_each', campaign_id=c.id) }}">See and edit each one</a>{% endif %}</p>{% endif %}
+        {% if own.total %}<a href="{{ url_for('ui.campaign_each', campaign_id=c.id) }}">Edit each one</a> · <a href="{{ url_for('ui.campaign_review', campaign_id=c.id) }}">Review them all</a>{% endif %}</p>{% endif %}
       {% if own_columns %}
       <div class="row own-cols">
         <div class="field"><label for="own_subject_col">Subject from column <span class="hint">empty = the subject above</span></label>
@@ -378,9 +379,10 @@
       </div>
       <div>
         <h3>Send to the list</h3>
+        {% if c.list_id %}<p class="hint" style="margin:0 0 8px"><a href="{{ url_for('ui.campaign_review', campaign_id=c.id) }}">Review every email and choose who gets it</a></p>{% endif %}
         <label class="check"><input type="radio" name="when" value="now" checked> Start now</label>
         <label class="check start-at"><input type="radio" name="when" value="later"> Start at <input type="datetime-local" name="send_at" value="{{ scheduled_local or local_now }}" min="{{ local_now }}" style="width:auto;margin-left:6px"> <span class="hint">{{ settings.timezone }}</span></label>
-        <button class="btn primary" name="action" value="schedule" data-confirm="Send this campaign to the whole list?"><svg><use href="#i-send"/></svg>{{ 'Approve and schedule' if c.status == 'pending_approval' else 'Schedule campaign' }}</button>
+        <button class="btn primary" name="action" value="schedule" data-confirm="Send this campaign now to everyone ticked on the review page?"><svg><use href="#i-send"/></svg>{{ 'Approve and schedule' if c.status == 'pending_approval' else 'Schedule campaign' }}</button>
       </div>
     </div>
   </section>

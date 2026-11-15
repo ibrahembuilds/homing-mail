@@ -8,7 +8,8 @@
     <h1>Each lead's email</h1>
     <div class="sub"><strong class="num">{{ counts.own }}</strong> of <span class="num">{{ counts.total }}</span> leads have their own email.{% if counts.own < counts.total %} The others get the main email.{% endif %}</div>
   </div>
-  <a class="btn" href="{{ url_for('ui.campaign', campaign_id=c.id) }}#ai">Back to the campaign</a>
+  <div class="actions"><a class="btn" href="{{ url_for('ui.campaign_review', campaign_id=c.id) }}">Review them all</a>
+    <a class="btn" href="{{ url_for('ui.campaign', campaign_id=c.id) }}#ai">Back to the campaign</a></div>
 </div>
 
 {% if gaps.leads %}

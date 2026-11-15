@@ -81,3 +81,27 @@ def test_agent_page_and_hideable_menu(env):
     assert 'id="nav-toggle"' in page and 'id="nav-open"' in page
     env.client.set_cookie('nav', 'collapsed', path='/')
     assert 'class="nav-collapsed"' in env.client.get('/campaigns/').text
+
+
+def test_review_every_email_and_choose_who_gets_it(env):
+    list_id = make_list(env)
+    campaign_id = make_campaign(env, list_id, subject='Hi {{first_name}}', html='<p>Hello {{first_name}} at {{company}}</p>')
+    page = env.client.get(f'/campaigns/campaigns/{campaign_id}/review').text
+    assert 'Review emails' in page and 'Hi Ana' in page and 'Hello Ana at Acme' in page and 'review-frame' in page
+    ana = env.db.val("SELECT id FROM contacts WHERE email = 'ana@example.com'")
+    carol = env.db.val("SELECT id FROM contacts WHERE email = 'carol@example.org'")
+    frame = env.client.get(f'/campaigns/campaigns/{campaign_id}/preview?contact={carol}&framed=1').text
+    assert 'carol@example.org' in frame and 'Hello Carol' in frame
+
+    reply = env.client.post(f'/campaigns/campaigns/{campaign_id}/review/include', json={'ids': [ana], 'include': False},
+                            headers={'X-CSRF-Token': env.csrf}).get_json()
+    assert reply['left_out'] == 1 and reply['included'] == reply['total'] - 1
+    assert 'left-out' in env.client.get(f'/campaigns/campaigns/{campaign_id}/review').text
+    assert 'Hi Ana' in env.client.get(f'/campaigns/campaigns/{campaign_id}/review?show=out').text
+
+    service.schedule_campaign(env.db, env.db.settings(), campaign_id)
+    env.drain()
+    sent_to = {m['to'][0] for m in env.catcher.messages}
+    assert 'ana@example.com' not in sent_to and 'carol@example.org' in sent_to       # Ana was left out
+    page = env.client.get(f'/campaigns/campaigns/{campaign_id}/review').text
+    assert 'badge ok">sent' in page

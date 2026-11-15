@@ -280,6 +280,51 @@
     if (remembered === '1') setHistory(true);
   }
 
+  // Reviewing a campaign: click a lead to see their email; the tick box decides who gets it.
+  var reviewBox = document.getElementById('review');
+  if (reviewBox) {
+    var items = Array.prototype.slice.call(document.querySelectorAll('#review-items li[data-lead]'));
+    var frameEl = document.getElementById('review-frame');
+    var openLink = document.getElementById('rv-open');
+    var current = items.findIndex(function (li) { return li.classList.contains('on'); });
+    var select = function (index) {
+      if (!items.length) return;
+      current = Math.max(0, Math.min(items.length - 1, index));
+      var li = items[current];
+      items.forEach(function (other) { other.classList.toggle('on', other === li); });
+      frameEl.src = li.dataset.src;
+      openLink.href = li.dataset.src;
+      li.scrollIntoView({ block: 'nearest' });
+      var url = new URL(window.location.href);
+      url.searchParams.set('lead', li.dataset.lead);
+      history.replaceState(null, '', url);
+    };
+    items.forEach(function (li, index) {
+      li.querySelector('.review-item').addEventListener('click', function () { select(index); });
+      li.querySelector('.pick').addEventListener('change', function (event) {
+        var box = event.target;
+        fetch(reviewBox.dataset.includeUrl, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf, 'X-Requested-With': 'fetch' },
+          body: JSON.stringify({ ids: [li.dataset.lead], include: box.checked })
+        }).then(function (reply) { return reply.json(); }).then(function (data) {
+          if (data.error) { box.checked = !box.checked; window.alert(data.error); return; }
+          li.classList.toggle('left-out', !box.checked);
+          document.getElementById('rv-included').textContent = data.included;
+          document.getElementById('rv-out-note').textContent = data.left_out ? ' · ' + data.left_out + ' left out' : '';
+        }).catch(function () { box.checked = !box.checked; });
+      });
+    });
+    var prev = document.getElementById('rv-prev'), next = document.getElementById('rv-next');
+    if (prev) prev.addEventListener('click', function () { select(current - 1); });
+    if (next) next.addEventListener('click', function () { select(current + 1); });
+    document.addEventListener('keydown', function (event) {
+      if (event.target.closest('input, textarea, select')) return;
+      if (event.key === 'ArrowDown' || event.key === 'j') { event.preventDefault(); select(current + 1); }
+      if (event.key === 'ArrowUp' || event.key === 'k') { event.preventDefault(); select(current - 1); }
+      if (event.key === ' ' && items[current]) { event.preventDefault(); items[current].querySelector('.pick').click(); }
+    });
+  }
+
   // Agent chat. A message starts a turn on the server; the page then asks every
   // second what the agent has done so far, until it has answered.
   var composer = document.getElementById('composer');
