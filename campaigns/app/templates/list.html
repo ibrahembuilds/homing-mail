@@ -22,10 +22,11 @@
     {{ summary.total|num }} rows read · {{ summary.added|num }} new · {{ summary.existing|num }} already known from another list
     {% if summary.already_in_list %} · {{ summary.already_in_list|num }} were already in this list{% endif %}
     {% if summary.duplicates %} · {{ summary.duplicates|num }} duplicate rows skipped{% endif %}
+    {% if summary.needs_email %} · {{ summary.needs_email|num }} without an email, kept below so their address can be found{% endif %}
     {% if summary.invalid %} · {{ summary.invalid|num }} invalid addresses skipped{% endif %}
     {% if summary.role %} · {{ summary.role|num }} system mailboxes skipped (postmaster, abuse, no-reply){% endif %}
     {% if summary.suppressed %} · {{ summary.suppressed|num }} are on the suppression list and will not be mailed{% endif %}
-    <br>Email column: <code>{{ summary.columns.email }}</code>
+    <br>Email column: {% if summary.columns.email %}<code>{{ summary.columns.email }}</code>{% else %}none (every lead waits for an email){% endif %}
     {% if summary.columns.first_name %} · name from <code>{{ summary.columns.first_name }}</code>{% endif %}
     {% if summary.columns.fields %} · merge tags: {% for f in summary.columns.fields %}<code>{{ '{{' }}{{ f }}{{ '}}' }}</code> {% endfor %}{% endif %}
     {% if summary.invalid_samples %}<br>Examples of skipped values: {% for v in summary.invalid_samples %}<code>{{ v }}</code> {% endfor %}{% endif %}
@@ -53,14 +54,47 @@
   {% if results %}{{ ui.tile('Opened', results.open_rate|pct, 'across all campaigns') }}{{ ui.tile('Replied', results.reply_rate|pct) }}{% endif %}
 </div>
 
-<details class="box" {{ 'open' if not counts.total }}>
+{% if waiting or pcounts.get('added') %}
+<section class="card flush" id="no-email" {% if pcounts.get('searching') %}data-refresh="4"{% endif %}>
+  <div class="card-head">
+    <h2>Leads without an email</h2>
+    <span class="muted small">{{ waiting|length }} waiting{% if pcounts.get('added') %} · {{ pcounts.added }} found and added to the list{% endif %}</span>
+    {% if pcounts.get('needs_email') %}<form class="inline push" method="post" action="{{ url_for('ui.list_find_emails', list_id=list.id) }}">{{ ui.csrf() }}<button class="btn primary small"><svg aria-hidden="true"><use href="#i-search"/></svg>Find their emails</button></form>{% endif %}
+  </div>
+  {% if pcounts.get('searching') %}<p class="searching"><span class="dot-live" aria-hidden="true"></span>Reading their websites for a published address. This page updates by itself.</p>
+  {% elif pcounts.get('needs_email') %}<p class="hint pad">Homing reads each company's website (home, contact and about pages). Addresses published there are added to the list; guesses wait for your OK.</p>{% endif %}
+  {% if waiting %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Lead</th><th>Website</th><th>Status</th><th>Address</th></tr></thead>
+    <tbody>
+    {% for p in waiting %}
+    <tr>
+      <td><strong>{{ p.label }}</strong>{% if p.first_name and p.first_name not in p.label %}<div class="muted tiny">{{ p.first_name }} {{ p.last_name }}</div>{% endif %}</td>
+      <td class="small">{% if p.website %}<a href="https://{{ p.website }}" target="_blank" rel="noopener noreferrer">{{ p.website }}</a>{% else %}<span class="faint">none</span>{% endif %}</td>
+      <td>{{ ui.badge(p.status, prospect_labels[p.status]) }}{% if p.detail %}<div class="muted tiny">{{ p.detail|truncate(110) }}</div>{% endif %}</td>
+      <td class="nowrap">
+        <form class="inline-field" method="post" action="{{ url_for('ui.list_prospect', list_id=list.id, prospect_id=p.id) }}">{{ ui.csrf() }}
+          <input type="email" name="email" value="{{ p.email }}" placeholder="name@company.com" aria-label="Email address for {{ p.label }}">
+          <button class="btn small" name="action" value="add">{{ 'Use this' if p.status == 'guessed' else 'Add' }}</button>
+          <button class="btn small quiet" name="action" value="dismiss" title="Skip this lead" aria-label="Skip {{ p.label }}">×</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
+</section>
+{% endif %}
+
+<details class="box" {{ 'open' if not counts.total and not waiting }}>
   <summary>Add more leads to this list</summary>
   <form method="post" action="{{ url_for('ui.list_import', list_id=list.id) }}" enctype="multipart/form-data">{{ ui.csrf() }}
     <div class="row">
       <div class="field">
         <label for="file">File <span class="hint">CSV or Excel (.xlsx)</span></label>
         <input id="file" type="file" name="file" accept=".csv,.tsv,.txt,.xlsx,text/csv,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
-        <div class="hint">One row per contact. A column of email addresses is required; columns named first name, last name or name are recognised, and every other column becomes a merge tag you can use in emails.</div>
+        <div class="hint">One row per lead. Columns named email, first name, last name or name are recognised; every other column becomes a merge tag. Rows without an email but with a website are kept, and Homing can find their address.</div>
       </div>
       <div class="field">
         <label for="pasted">Or paste addresses</label>
@@ -83,13 +117,13 @@
   </form>
   {% if members %}
   <div class="table-wrap"><table>
-    <tr><th>Email</th><th>Name</th><th>Status</th><th>Other fields</th><th></th></tr>
+    <tr><th>Email</th><th>Name</th><th>Status</th><th>Details</th><th></th></tr>
     {% for m in members %}
     <tr>
       <td><a href="{{ url_for('ui.lead', contact_id=m.id) }}">{{ m.email }}</a>{% if m.verify_status in ('invalid', 'risky') %} {{ ui.badge(m.verify_status, 'would bounce' if m.verify_status == 'invalid' else 'likely typo' if (m.verify_detail or '').startswith('Possible typo') else 'system mailbox') }}{% if m.verify_detail %} <span class="tiny muted">{{ m.verify_detail }}</span>{% endif %}{% endif %}</td>
       <td>{{ m.first_name }} {{ m.last_name }}</td>
       <td>{{ ui.badge(m.status) }}{% if m.status_reason %}<div class="muted small">{{ m.status_reason|truncate(70) }}</div>{% endif %}</td>
-      <td class="muted small">{% for key, value in m.extra.items() %}{{ key }}: {{ value|truncate(30) }}{{ ', ' if not loop.last }}{% endfor %}</td>
+      <td class="muted small">{% for key, value in m.extra.shown %}<span class="field-pair"><span class="faint">{{ key|replace('_', ' ') }}</span> {{ value|truncate(40) }}</span>{% endfor %}{% if m.extra.more %}<span class="faint"> +{{ m.extra.more }} more</span>{% endif %}</td>
       <td class="right">
         <form class="inline" method="post" action="{{ url_for('ui.list_remove_member', list_id=list.id) }}" data-confirm="Remove {{ m.email }} from this list?">{{ ui.csrf() }}<input type="hidden" name="contact_id" value="{{ m.id }}"><button class="btn small">Remove</button></form>
       </td>

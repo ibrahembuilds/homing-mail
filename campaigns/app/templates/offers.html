@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Offers{% endblock %}
+{% block body %}
+<div class="head">
+  <div><h1>Offers</h1>
+    <div class="sub">What you give, who it is for, and the one step you ask for. The agent and the per-lead writer only say what is written here.</div></div>
+  <div class="actions">
+    {% if offers %}<a class="btn" href="{{ url_for('ui.offers_page', new=1) }}#write">Write one yourself</a>{% endif %}
+    <form method="post" action="{{ url_for('ui.offers_assistant') }}">{{ ui.csrf() }}<button class="btn primary"><svg aria-hidden="true"><use href="#i-spark"/></svg>Build one with the assistant</button></form>
+  </div>
+</div>
+
+{% for o in offers %}
+<section class="card offer" id="offer-{{ o.id }}">
+  <div class="offer-head">
+    <div>
+      <h2>{{ o.name }}{% if o.is_default %} <span class="badge ok">default</span>{% endif %}</h2>
+      {% if o.summary %}<p class="offer-summary">{{ o.summary }}</p>{% endif %}
+    </div>
+    <div class="actions">
+      <a class="btn small" href="{{ url_for('ui.offers_page', edit=o.id) }}#write">Edit</a>
+      {% if not o.is_default %}<form class="inline" method="post" action="{{ url_for('ui.offers_default', offer_id=o.id) }}">{{ ui.csrf() }}<button class="btn small">Make default</button></form>{% endif %}
+      <form class="inline" method="post" action="{{ url_for('ui.offers_delete', offer_id=o.id) }}" data-confirm="Delete the offer &quot;{{ o.name }}&quot;?">{{ ui.csrf() }}<button class="btn small ghost danger">Delete</button></form>
+    </div>
+  </div>
+  <dl class="offer-parts">
+    {% for key, label, hint, _ in fields %}{% if key not in ('name', 'summary') and o[key] %}
+    <div><dt>{{ label }}</dt><dd>{{ o[key] }}</dd></div>
+    {% endif %}{% endfor %}
+  </dl>
+  {% if missing[o.id] %}<p class="hint">Still empty: {{ missing[o.id]|join(', ') }}. Emails are vaguer without them.</p>{% endif %}
+  {% if used.get(o.id) %}<p class="hint">Used by {{ used[o.id] }} campaign{{ '' if used[o.id] == 1 else 's' }}.</p>{% endif %}
+</section>
+{% endfor %}
+
+{% if not offers %}
+<section class="card offer-start">
+  <svg class="chat-hello-icon" aria-hidden="true"><use href="#i-target"/></svg>
+  <h2>No offer yet</h2>
+  <p class="muted">Without one, the AI can only write vague emails. The assistant asks a few short questions (or reads your website) and writes it with you. Or fill in the form below.</p>
+</section>
+{% endif %}
+
+{% if writing %}
+<section class="card" id="write">
+  <h2>{{ 'Edit "' ~ editing.name ~ '"' if editing else 'Write an offer' }}</h2>
+  <form method="post" action="{{ url_for('ui.offers_save') }}">{{ ui.csrf() }}
+    {% if editing %}<input type="hidden" name="offer_id" value="{{ editing.id }}">{% endif %}
+    {% for key, label, hint, limit in fields %}
+    <div class="field"><label for="o-{{ key }}">{{ label }} <span class="hint">{{ hint }}</span></label>
+      {% if key in ('name', 'summary', 'call_to_action') %}
+      <input id="o-{{ key }}" name="{{ key }}" maxlength="{{ limit }}" value="{{ editing[key] if editing else '' }}" {{ 'required' if key == 'name' }}>
+      {% else %}
+      <textarea id="o-{{ key }}" name="{{ key }}" rows="2" maxlength="{{ limit }}">{{ editing[key] if editing else '' }}</textarea>
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% if offers and not (editing and editing.is_default) %}<label class="check"><input type="checkbox" name="make_default"> <span>Make this the default offer</span></label>{% endif %}
+    <div class="actions"><button class="btn primary">Save offer</button>{% if editing or offers %}<a class="btn ghost" href="{{ url_for('ui.offers_page') }}">Cancel</a>{% endif %}</div>
+  </form>
+</section>
+{% endif %}
+
+{% if threads %}
+<section class="card">
+  <h2>Conversations with the assistant</h2>
+  <ul class="plain-list">
+    {% for t in threads %}<li><a href="{{ url_for('ui.agent_thread', thread_id=t.id) }}">{{ t.title }}</a> <span class="muted small">{{ t.updated_at|ago }}</span></li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

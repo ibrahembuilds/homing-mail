@@ -1,0 +1,18 @@
+{% for b in blocks %}
+{% if b.kind == 'user' %}
+<div class="msg user" data-id="{{ b.id }}">
+  {% if b.attachment %}<div class="attach-chip"><svg aria-hidden="true"><use href="#i-clip"/></svg>{{ b.attachment.file or b.attachment.name }}{% if b.attachment.leads is defined %} · {{ b.attachment.leads }} lead{{ '' if b.attachment.leads == 1 else 's' }}{% if b.attachment.needs_email %}, {{ b.attachment.needs_email }} without email{% endif %}{% endif %}</div>{% endif %}
+  {% if b.html %}<div>{{ b.html }}</div>{% endif %}
+</div>
+{% elif b.kind == 'assistant' %}
+<div class="msg assistant md" data-id="{{ b.id }}">{{ b.html }}</div>
+{% elif b.kind == 'steps' %}
+{% set failed = b['items']|selectattr('error')|list %}
+<details class="agent-steps {{ 'has-error' if failed }}" data-id="{{ b.id }}">
+  <summary><svg aria-hidden="true"><use href="#i-check"/></svg>{{ b['items']|length }} step{{ '' if b['items']|length == 1 else 's' }}{% if failed %} · {{ failed|length }} failed{% endif %}<span class="agent-steps-last">{{ b['items'][-1].text }}</span></summary>
+  <ol>{% for item in b['items'] %}<li class="{{ 'error' if item.error }}">{{ item.text }}</li>{% endfor %}</ol>
+</details>
+{% elif b.kind == 'note' %}
+<div class="msg note" data-id="{{ b.id }}">{{ b.text }}</div>
+{% endif %}
+{% endfor %}

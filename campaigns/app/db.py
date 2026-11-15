@@ -376,6 +376,52 @@ MIGRATIONS = [
         last_seen_at REAL
     )
     """,
+    # 7: agent runs in the background, offers, leads still missing an email, research per lead
+    """
+    ALTER TABLE agent_threads ADD COLUMN kind TEXT NOT NULL DEFAULT 'outreach';
+    ALTER TABLE agent_threads ADD COLUMN status TEXT NOT NULL DEFAULT 'idle';
+    ALTER TABLE agent_threads ADD COLUMN activity TEXT NOT NULL DEFAULT '';
+    ALTER TABLE agent_threads ADD COLUMN error TEXT NOT NULL DEFAULT '';
+    ALTER TABLE agent_threads ADD COLUMN heartbeat_at REAL;
+    ALTER TABLE agent_threads ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE contacts ADD COLUMN research TEXT NOT NULL DEFAULT '';
+    ALTER TABLE campaigns ADD COLUMN offer_id INTEGER;
+    CREATE TABLE offers (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        summary TEXT NOT NULL DEFAULT '',
+        audience TEXT NOT NULL DEFAULT '',
+        problem TEXT NOT NULL DEFAULT '',
+        outcome TEXT NOT NULL DEFAULT '',
+        details TEXT NOT NULL DEFAULT '',
+        proof TEXT NOT NULL DEFAULT '',
+        call_to_action TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        is_default INTEGER NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL
+    );
+    CREATE TABLE prospects (
+        id INTEGER PRIMARY KEY,
+        list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+        first_name TEXT NOT NULL DEFAULT '',
+        last_name TEXT NOT NULL DEFAULT '',
+        fields TEXT NOT NULL DEFAULT '{}',
+        website TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'needs_email',
+        email TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT '',
+        detail TEXT NOT NULL DEFAULT '',
+        contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL
+    );
+    CREATE INDEX idx_prospects_list ON prospects(list_id, status)
+    """,
+    # 8: case studies on offers
+    """
+    ALTER TABLE offers ADD COLUMN case_studies TEXT NOT NULL DEFAULT ''
+    """,
 ]
 
 # What the columns above hold:
@@ -401,6 +447,14 @@ MIGRATIONS = [
 #   campaigns.skip_risky   also leave out system mailboxes and likely typos
 #   team.role              owner | admin | member (see team.py); password_hash is only used without
 #                          a mail server; session_epoch changes to sign someone out everywhere
+#   agent_threads.kind     outreach (the main agent) | offer (helps write the owner's offer)
+#   agent_threads.status   idle | running | error; activity = what a running turn is doing now,
+#                          heartbeat_at = last sign of life (see agent_runs.py)
+#   contacts.research      facts the agent found about the lead, with sources; the writer uses them
+#   offers                 what the owner sells and to whom; one is_default, campaigns.offer_id picks one
+#   prospects              uploaded leads without a usable email; status needs_email | found (published
+#                          on their own site, added to the list) | guessed (pattern, needs the owner's OK)
+#                          | not_found | added | dismissed
 
 
 class DB:

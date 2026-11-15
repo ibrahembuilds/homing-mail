@@ -39,15 +39,20 @@ flowchart LR
 | | |
 |---|---|
 | **Leads** | Upload a CSV or Excel file. Every column can be used in the email. A pipeline tracks each lead from new to won. |
-| **AI writing** | A personal opening line, or a full rewrite, for every lead. It only uses facts it was given and never adds links. |
+| **AI writing** | A personal opening line, or a full email per lead: their situation, why they need it, how it helps, and up to three of your real case studies. It only uses facts it was given, never adds links, and rewrites anything that sounds machine-made. |
+| **Each lead's own email** | One campaign where every lead gets a different email: from columns of your file (`email_subject`, `email_body`) or written by hand, each one previewable. Leftover `[placeholders]` block the send. |
+| **Missing emails** | Leads uploaded without an address are kept; Homing reads each company's own website (home, contact and about pages) and adds the address published there. |
+| **Offers** | Write down what you give, to whom, the result and your case studies, by hand or with the offer assistant. Every email uses it. |
+| **Email look** | Branded (a clean card with your name or logo, signature and footer) or plain, like a personal email. |
+| **Write an email** | One email to one person from any connected address, with a live preview. |
 | **Sequences** | The first email plus follow-ups: "wait 3 days, then reply in the same thread if they have not answered". |
 | **Subject tests** | Two subject lines; the one that gets more replies goes to the rest of the list. |
 | **Address checks** | Bad domains, throwaway mailboxes and typos like `gmial.com` are caught before anything is sent. |
-| **Inbox** | Replies matched to the lead, sorted by AI (interested, meeting, not interested…), answered in the same thread. |
+| **Inbox** | Replies matched to the lead, sorted by AI (interested, meeting, not interested…), answered in the same thread. Switch to any connected mailbox to read everything it receives. |
 | **Calendar** | Follow-up tasks and scheduled sends, with a feed for Google, Outlook and Apple calendars. |
 | **Safe sending** | Hourly and daily limits, sending windows and a warm-up plan. Pauses itself on high bounce or spam rates. |
 | **Analytics** | Opens, clicks, replies and bounces per campaign, follow-up, list and account, plus a funnel to booked meetings. |
-| **AI agent** | Ask in plain words: "write a follow-up for my dentist list and send it tomorrow at 10". You approve before it sends. |
+| **AI agent** | Ask in plain words: "write a follow-up for my dentist list and send it tomorrow at 10". It researches leads, finds missing emails and builds lists, works in the background with live progress, and you approve before it sends. |
 | **Domain setup** | Every DNS record with a copy button and live check. With a Cloudflare token it adds them for you. |
 | **API and webhooks** | Send transactional email from your own apps. |
 

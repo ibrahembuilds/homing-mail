@@ -93,6 +93,17 @@
 </div>
 {% endmacro %}
 
+{# The four numbers that matter, with the rest in one quiet line. #}
+{% macro key_numbers(s, more_href=None) %}
+<div class="tiles four">
+  {{ tile('Delivered', s.delivered|num, (s.sent|num) ~ ' sent') }}
+  {{ tile('Opened', s.open_rate|pct, (s.opened|num) ~ ' people') }}
+  {{ tile('Replied', s.reply_rate|pct, (s.replied|num) ~ ' people') }}
+  {{ tile('Bounced', s.bounce_rate|pct, (s.hard_bounced|num) ~ ' address' ~ ('es' if s.hard_bounced != 1 else '') ~ ' did not exist', 'bad' if s.bounce_rate > 5 else ('warn' if s.bounce_rate > 2 else '')) }}
+</div>
+<p class="also">Also: {{ s.click_rate|pct }} clicked · {{ s.complaint_rate|pct }} marked as spam · {{ s.unsubscribe_rate|pct }} unsubscribed{% if more_href %} · <a href="{{ more_href }}">All results</a>{% endif %}</p>
+{% endmacro %}
+
 {# Leads at each stage, from the first email to a booked meeting. #}
 {% macro funnel(stages) %}
 {% set total = stages[0].count %}
@@ -162,4 +173,15 @@
     <button class="btn primary">Add to calendar</button>
   {% endif %}
 </form>
+{% endmacro %}
+
+{# The Inbox's mailbox switcher: the AI-sorted lead replies, then one tab per connected mailbox. #}
+{% macro inbox_profiles(profiles, current='replies') %}
+<nav class="profiles" aria-label="Mailboxes">
+  <a class="profile {{ 'on' if current == 'replies' }}" href="{{ url_for('ui.inbox') }}"><span class="avatar ai"><svg aria-hidden="true"><use href="#i-spark"/></svg></span><span class="who"><strong>Lead replies</strong><span>sorted by the AI</span></span></a>
+  {% for p in profiles %}
+  <a class="profile {{ 'on' if current == p.key }}" href="{{ url_for('ui.mailbox', key=p.key) }}" title="{{ p.email }}"><span class="avatar">{{ p.email[:1]|upper }}</span><span class="who"><strong>{{ p.email }}</strong><span>{{ p.name or 'mailbox' }}</span></span></a>
+  {% endfor %}
+  {% if is_admin %}<a class="profile add" href="{{ url_for('ui.accounts') }}" title="Connect another mailbox"><span class="avatar">+</span><span class="who"><strong>Add mailbox</strong><span>any address</span></span></a>{% endif %}
+</nav>
 {% endmacro %}

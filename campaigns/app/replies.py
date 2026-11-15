@@ -103,7 +103,7 @@ def _find_message(db, msg, sender):
         if row is not None:
             return row
     return db.one("SELECT * FROM messages WHERE to_email = ? AND sent_at IS NOT NULL AND sent_at >= ? "
-                  "AND kind IN ('campaign', 'reply', 'agent', 'api') ORDER BY sent_at DESC LIMIT 1",
+                  "AND kind IN ('campaign', 'reply', 'agent', 'api', 'single') ORDER BY sent_at DESC LIMIT 1",
                   sender, now() - MATCH_WINDOW_DAYS * 86400)
 
 

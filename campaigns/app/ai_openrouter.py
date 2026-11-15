@@ -13,6 +13,7 @@ NAME = 'openrouter'
 LABEL = 'OpenRouter'
 API = 'https://openrouter.ai/api/v1'
 DEFAULT_MODEL = ''  # chosen from the live model list, see pick_default()
+NATIVE_WEB_SEARCH = False   # the agent gets a web_search tool that calls search() instead
 
 
 def _headers(api_key):
@@ -88,7 +89,11 @@ def _content(message):
 
 
 def complete(api_key, model, system, history, tools, web_search=False):
-    """One agent turn. Returns {'text', 'tool_calls', 'raw', 'note', 'model', 'usage'}."""
+    """One agent turn. Returns {'text', 'tool_calls', 'raw', 'note', 'model', 'usage'}.
+
+    web_search is ignored here: OpenRouter's search plugin would run on every call, so
+    the agent gets a web_search tool instead (see search()) and searches only when it
+    needs to."""
     if not model:
         raise ProviderError('Choose an OpenRouter model in Settings first.')
     body = {
@@ -98,8 +103,6 @@ def complete(api_key, model, system, history, tools, web_search=False):
         'tools': [{'type': 'function', 'function': {'name': t['name'], 'description': t['description'],
                                                     'parameters': t['input_schema']}} for t in tools],
     }
-    if web_search:
-        body['plugins'] = [{'id': 'web', 'max_results': 5}]
     data = _post(api_key, body)
     choice = data['choices'][0]
     message = choice.get('message') or {}
@@ -129,6 +132,33 @@ def complete(api_key, model, system, history, tools, web_search=False):
         text += '\n\nSources: ' + ', '.join(sources[:6])
     return {'text': text, 'tool_calls': calls, 'raw': None, 'note': note,
             'model': data.get('model') or model, 'usage': _usage(data)}
+
+
+def search(api_key, model, query, max_results=6):
+    """One web search through OpenRouter's search plugin, run only when the agent asks.
+    Returns {'query', 'answer', 'results': [{'title', 'url', 'snippet'}]}."""
+    query = ' '.join(str(query or '').split())[:300]
+    if not query:
+        raise ProviderError('Give something to search for.')
+    body = {
+        'model': model,
+        'max_tokens': 900,
+        'messages': [{'role': 'user', 'content':
+                      f'Search the web for: {query}\n\nList the most useful results. For each: the title, the web '
+                      'address and one plain sentence on what it says that is relevant. No introduction.'}],
+        'plugins': [{'id': 'web', 'max_results': max(1, min(int(max_results), 10))}],
+    }
+    data = _post(api_key, body)
+    message = data['choices'][0].get('message') or {}
+    results, seen = [], set()
+    for item in message.get('annotations') or []:
+        cite = item.get('url_citation') if isinstance(item, dict) else None
+        if not cite or not cite.get('url') or cite['url'] in seen:
+            continue
+        seen.add(cite['url'])
+        results.append({'title': str(cite.get('title') or '')[:200], 'url': cite['url'][:500],
+                        'snippet': ' '.join(str(cite.get('content') or '').split())[:400]})
+    return {'query': query, 'answer': _content(message)[:3000], 'results': results[:10], 'usage': _usage(data)}
 
 
 def _parse_json(text):

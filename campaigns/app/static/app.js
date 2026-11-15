@@ -180,74 +180,237 @@
     });
   }
 
-  // Agent chat.
+  // Long values show three lines; a click shows all of it.
+  document.querySelectorAll('.clamp').forEach(function (el) {
+    el.addEventListener('click', function () { el.classList.toggle('open'); });
+  });
+
+  // A page with work running in the background reloads itself until it is done.
+  var refresh = document.querySelector('[data-refresh]');
+  if (refresh) setTimeout(function () { window.location.reload(); }, (parseInt(refresh.dataset.refresh, 10) || 5) * 1000);
+
+  // The sidebar folds down to icons; the choice is kept in a cookie so the next page starts that way.
+  var navToggle = document.getElementById('nav-toggle');
+  var navOpen = document.getElementById('nav-open');
+  if (navToggle && navOpen) {
+    var setNav = function (hidden) {
+      document.documentElement.classList.toggle('nav-collapsed', hidden);
+      document.cookie = 'nav=' + (hidden ? 'collapsed' : 'open') + '; path=/; max-age=31536000; SameSite=Lax';
+      navOpen.setAttribute('aria-expanded', hidden ? 'false' : 'true');
+      (hidden ? navOpen : navToggle).focus();
+    };
+    navToggle.addEventListener('click', function () { setNav(true); });
+    navOpen.addEventListener('click', function () { setNav(false); });
+  }
+
+  // Settings: one section at a time; links like settings#leadtools open the right one.
+  var settingsNav = document.querySelector('[data-settings-tabs]');
+  if (settingsNav) {
+    var panes = document.querySelectorAll('[data-settings-pane]');
+    var tabs = settingsNav.querySelectorAll('a');
+    var showPane = function (hash) {
+      var target = hash && document.getElementById(hash.slice(1));
+      var pane = target && (target.hasAttribute('data-settings-pane') ? target : target.closest('[data-settings-pane]'));
+      pane = pane || panes[0];
+      panes.forEach(function (p) { p.hidden = p !== pane; });
+      tabs.forEach(function (a) { a.classList.toggle('on', a.hash === '#' + pane.id); });
+      if (target && target.tagName === 'DETAILS') { target.open = true; target.scrollIntoView({ block: 'start' }); }
+    };
+    settingsNav.addEventListener('click', function (event) {
+      var link = event.target.closest('a');
+      if (!link) return;
+      event.preventDefault();
+      history.replaceState(null, '', link.hash);
+      showPane(link.hash);
+    });
+    window.addEventListener('hashchange', function () { showPane(location.hash); });
+    showPane(location.hash);
+  }
+
+  // Campaign step 3: the controls for the chosen kind of personal email.
+  var modeChoices = document.querySelector('[data-mode-choices]');
+  if (modeChoices) {
+    var showMode = function () {
+      var picked = modeChoices.querySelector('input[name=ai_mode]:checked');
+      var value = picked ? picked.value : '';
+      document.querySelectorAll('.mode-box[data-when-mode]').forEach(function (box) {
+        box.hidden = box.dataset.whenMode.split(' ').indexOf(value) === -1;
+      });
+    };
+    modeChoices.addEventListener('change', showMode);
+  }
+
+  // Write an email: the preview shows it the way the recipient's mail program will.
+  var composeText = document.getElementById('compose-text');
+  if (composeText) {
+    var frame = document.getElementById('compose-preview');
+    var pvTimer = null;
+    var renderPreview = function () {
+      fetch(composeText.dataset.previewUrl, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf, 'X-Requested-With': 'fetch' },
+        body: JSON.stringify({ text: composeText.value, sender: (document.getElementById('c-from') || {}).value })
+      }).then(function (reply) { return reply.json(); }).then(function (data) { frame.srcdoc = data.html; });
+    };
+    composeText.addEventListener('input', function () { clearTimeout(pvTimer); pvTimer = setTimeout(renderPreview, 300); });
+    var fromSelect = document.getElementById('c-from');
+    if (fromSelect) fromSelect.addEventListener('change', renderPreview);
+    var mirror = function (inputId, targetId, empty) {
+      var input = document.getElementById(inputId), target = document.getElementById(targetId);
+      if (input && target) input.addEventListener('input', function () { target.textContent = input.value || empty; });
+    };
+    mirror('c-subject', 'pv-subject', 'Subject');
+    mirror('c-to', 'pv-to', '…');
+    renderPreview();
+  }
+
+  // The agent's list of chats opens beside the conversation; the choice is remembered.
+  var historyToggle = document.getElementById('history-toggle');
+  var historyPanel = document.getElementById('history');
+  if (historyToggle && historyPanel) {
+    var setHistory = function (open) {
+      historyPanel.hidden = !open;
+      document.getElementById('agent-chat').classList.toggle('history-open', open);
+      historyToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      try { localStorage.setItem('agentHistory', open ? '1' : '0'); } catch (e) { /* private mode */ }
+    };
+    historyToggle.addEventListener('click', function () { setHistory(historyPanel.hidden); });
+    document.getElementById('history-close').addEventListener('click', function () { setHistory(false); });
+    var remembered = null;
+    try { remembered = localStorage.getItem('agentHistory'); } catch (e) { /* private mode */ }
+    if (remembered === '1') setHistory(true);
+  }
+
+  // Agent chat. A message starts a turn on the server; the page then asks every
+  // second what the agent has done so far, until it has answered.
   var composer = document.getElementById('composer');
-  if (composer) {
+  var chat = document.getElementById('chat');
+  if (composer && chat) {
     var log = document.getElementById('log');
+    var turn = document.getElementById('turn');
     var prompt = document.getElementById('prompt');
     var button = composer.querySelector('button.primary');
     var attach = document.getElementById('attach');
-    var add = function (kind, text, error) {
-      var node = document.createElement('div');
-      node.className = 'msg ' + kind + (error ? ' error' : '');
-      node.textContent = text;
-      log.appendChild(node);
-      log.scrollTop = log.scrollHeight;
-      return node;
+    var live = document.getElementById('live');
+    var activity = document.getElementById('activity');
+    var errorBox = document.getElementById('chat-error');
+    var attached = document.getElementById('attached');
+    var attachment = null;
+    var after = parseInt(chat.dataset.after || '0', 10);
+    var timer = null;
+    var headers = { 'X-CSRF-Token': csrf, 'X-Requested-With': 'fetch' };
+    var nearBottom = function () { return log.scrollHeight - log.scrollTop - log.clientHeight < 120; };
+    var toBottom = function () { log.scrollTop = log.scrollHeight; };
+    var busy = function (on) {
+      prompt.disabled = button.disabled = on;
+      live.hidden = !on;
+      if (on) errorBox.hidden = true;
+    };
+    var showError = function (text) {
+      document.getElementById('error-text').textContent = text;
+      errorBox.hidden = false;
+    };
+    var openSteps = function () {
+      var open = {};
+      turn.querySelectorAll('details.agent-steps[open]').forEach(function (d) { open[d.dataset.id] = true; });
+      return open;
+    };
+    var refreshApprovals = function () {
+      var slot = document.getElementById('approvals-slot');
+      if (!slot) return;
+      fetch(window.location.href, { headers: { 'X-Requested-With': 'fetch' } })
+        .then(function (reply) { return reply.text(); })
+        .then(function (page) {
+          var fresh = new DOMParser().parseFromString(page, 'text/html').getElementById('approvals-slot');
+          if (fresh) slot.innerHTML = fresh.innerHTML;
+        });
+    };
+    var poll = function () {
+      fetch(chat.dataset.poll + '?after=' + after, { headers: headers })
+        .then(function (reply) { return reply.json(); })
+        .then(function (data) {
+          var stick = nearBottom(), open = openSteps();
+          if (data.html.trim() !== turn.dataset.html) {
+            turn.dataset.html = data.html.trim();
+            turn.innerHTML = data.html;
+            turn.querySelectorAll('details.agent-steps').forEach(function (d) { if (open[d.dataset.id]) d.open = true; });
+          }
+          if (data.activity) activity.textContent = data.activity;
+          if (stick) toBottom();
+          if (data.status === 'running') { timer = setTimeout(poll, 1000); return; }
+          busy(false);
+          if (data.status === 'error') showError(data.error || 'Something went wrong.');
+          if (data.pending) refreshApprovals();
+          var offerCard = document.getElementById('offer-live');   // the offer assistant's live card
+          if (offerCard) fetch(offerCard.dataset.url, { headers: headers })
+            .then(function (reply) { return reply.text(); }).then(function (html) { offerCard.innerHTML = html; });
+          prompt.focus();
+        })
+        .catch(function () { timer = setTimeout(poll, 3000); });   // keep trying through a network hiccup
+    };
+    var settle = function () {
+      // Earlier turns move out of the live area so the next poll only redraws the new one.
+      while (turn.firstChild) log.insertBefore(turn.firstChild, turn);
+      turn.dataset.html = '';
     };
     var send = function (text) {
       var suggest = document.getElementById('suggest');
-      if (suggest) suggest.remove();
-      add('user', text);
-      prompt.value = '';
-      prompt.disabled = button.disabled = true;
-      var waiting = add('thinking', 'Working…');
+      if (!text && !attachment) return;
+      busy(true);
       fetch(composer.dataset.url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf, 'X-Requested-With': 'fetch' },
-        body: JSON.stringify({ text: text })
+        method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, headers),
+        body: JSON.stringify({ text: text, attachment: attachment })
       }).then(function (reply) {
         return reply.json().catch(function () { return { error: 'The server did not answer (HTTP ' + reply.status + ').' }; });
       }).then(function (data) {
-        waiting.remove();
-        (data.messages || []).forEach(function (m) {
-          add(m.kind, m.kind === 'tool' ? m.summary : m.text, m.error);
-        });
-        if (data.error) add('note', data.error);
-        // New approvals appear in the box at the top of the page.
-        if (data.pending) {
-          fetch(window.location.href, { headers: { 'X-Requested-With': 'fetch' } })
-            .then(function (reply) { return reply.text(); })
-            .then(function (page) {
-              var fresh = new DOMParser().parseFromString(page, 'text/html').getElementById('approvals-slot');
-              if (fresh) document.getElementById('approvals-slot').innerHTML = fresh.innerHTML;
-            });
-        }
+        if (data.error && !data.after) { busy(false); showError(data.error); return; }
+        if (suggest) suggest.remove();
+        settle();
+        turn.insertAdjacentHTML('beforebegin', data.html);
+        after = data.after;
+        prompt.value = '';
+        prompt.style.height = 'auto';
+        attachment = null;
+        attached.hidden = true;
+        toBottom();
+        poll();
       }).catch(function () {
-        waiting.remove();
-        add('note', 'Connection lost. Reload the page to see whether the agent finished.');
-      }).then(function () {
-        prompt.disabled = button.disabled = false;
-        prompt.focus();
+        busy(false);
+        showError('Could not reach the server. Check your connection and try again.');
       });
     };
     composer.addEventListener('submit', function (event) {
       event.preventDefault();
-      var text = prompt.value.trim();
-      if (text) send(text);
+      send(prompt.value.trim());
     });
     prompt.addEventListener('keydown', function (event) {
       if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); composer.requestSubmit(); }
     });
-    document.querySelectorAll('#suggest button').forEach(function (chip) {
-      chip.addEventListener('click', function () { if (!prompt.disabled) send(chip.textContent); });
-    });
-    var grow = function () {
+    prompt.addEventListener('input', function () {
       prompt.style.height = 'auto';
       prompt.style.height = Math.min(prompt.scrollHeight, 220) + 'px';
-    };
-    prompt.addEventListener('input', grow);
-    // Leads attached in the chat become a list; the agent is then told about it.
+    });
+    document.querySelectorAll('#suggest button').forEach(function (chip) {
+      chip.addEventListener('click', function () {
+        if (prompt.disabled) return;
+        var text = chip.textContent;
+        if (/\s$/.test(text)) { prompt.value = text; prompt.focus(); return; }   // needs the rest from you
+        send(text.trim());
+      });
+    });
+    document.getElementById('stop').addEventListener('click', function () {
+      activity.textContent = 'Stopping';
+      fetch(chat.dataset.stop, { method: 'POST', headers: headers });
+    });
+    document.getElementById('retry').addEventListener('click', function () {
+      busy(true);
+      fetch(chat.dataset.retry, { method: 'POST', headers: headers })
+        .then(function (reply) { return reply.json(); })
+        .then(function (data) {
+          if (data.error) { busy(false); showError(data.error); return; }
+          poll();
+        });
+    });
+    // Leads attached in the chat become a list; the next message tells the agent about it.
     if (attach) attach.addEventListener('change', function () {
       var file = attach.files[0];
       attach.value = '';
@@ -257,27 +420,32 @@
       var body = new FormData();
       body.append('file', file);
       body.append('consent', 'yes');
-      var waiting = add('thinking', 'Uploading ' + file.name + '…');
-      prompt.disabled = button.disabled = true;
-      fetch(composer.dataset.upload, {
-        method: 'POST', body: body, headers: { 'X-CSRF-Token': csrf, 'X-Requested-With': 'fetch' }
-      }).then(function (reply) {
-        return reply.json().catch(function () { return { error: 'Upload failed (HTTP ' + reply.status + ').' }; });
-      }).then(function (data) {
-        waiting.remove();
-        prompt.disabled = button.disabled = false;
-        if (data.error) { add('note', data.error); return; }
-        var ask = prompt.value.trim() || 'Read these leads and suggest a personal first email for them, using news about their companies.';
-        send(ask + '\n\n[Uploaded ' + file.name + ': list "' + data.name + '" (list_id ' + data.list_id + '), ' +
-             data.added + ' leads' + (data.invalid ? ', ' + data.invalid + ' invalid rows skipped' : '') +
-             (data.columns && data.columns.length ? '; columns: ' + data.columns.join(', ') : '') + ']');
-      }).catch(function () {
-        waiting.remove();
-        prompt.disabled = button.disabled = false;
-        add('note', 'Upload failed. Check your connection and try again.');
-      });
+      document.getElementById('attached-name').textContent = 'Uploading ' + file.name + '…';
+      attached.hidden = false;
+      fetch(composer.dataset.upload, { method: 'POST', body: body, headers: headers })
+        .then(function (reply) {
+          return reply.json().catch(function () { return { error: 'Upload failed (HTTP ' + reply.status + ').' }; });
+        }).then(function (data) {
+          if (data.error) { attached.hidden = true; showError(data.error); return; }
+          attachment = { list_id: data.list_id, file: data.file };
+          document.getElementById('attached-name').textContent = data.file + ' · ' + data.added + ' with email' +
+            (data.needs_email ? ', ' + data.needs_email + ' without' : '');
+          prompt.focus();
+        }).catch(function () {
+          attached.hidden = true;
+          showError('Upload failed. Check your connection and try again.');
+        });
     });
-    log.scrollTop = log.scrollHeight;
+    document.getElementById('attached-remove').addEventListener('click', function () {
+      attachment = null;
+      attached.hidden = true;
+    });
+    toBottom();
+    turn.dataset.html = turn.innerHTML.trim();
+    if (chat.dataset.status === 'running') {   // a turn still going from before the page loaded
+      busy(true);
+      poll();
+    }
   }
 
   // Adding an email account: a provider fills in its servers.

@@ -4,11 +4,11 @@ import datetime
 
 import flask
 
-from .. import ai, contacts, domainsetup, leadtools, news, planner, replies, service, writer
+from .. import ai, contacts, domainsetup, leadtools, mailview, news, perlead, planner, replies, service, writer
 from ..ai_common import ProviderError
 from ..db import loads, now
 from ..sender import local_time, timezone
-from .ui import PAGE, _back, _cfg, _db, bp
+from .ui import PAGE, _back, _brief_fields, _cfg, _db, bp
 
 
 # -- inbox --------------------------------------------------------------------------
@@ -38,7 +38,7 @@ def inbox():
         connected=bool(settings['reply_imap_user'] and settings['reply_imap_password']) or bool(
             db.val("SELECT COUNT(*) FROM mailboxes WHERE active = 1 AND imap_host != ''", default=0)),
         status=loads(db.state('reply_status'), default=None), inbox_error=db.state('inbox_error'),
-        reply_mode=settings.get('ai_reply_mode') or 'off')
+        reply_mode=settings.get('ai_reply_mode') or 'off', profiles=mailview.profiles(db, _cfg(), settings))
 
 
 def _reply(reply_id):
@@ -144,7 +144,11 @@ def leads():
     counts = {r['lead_status']: r['n'] for r in db.q('SELECT lead_status, COUNT(*) AS n FROM contacts GROUP BY lead_status')}
     return flask.render_template(
         'leads.html', active='leads', rows=[dict(r, company=company_of(r)) for r in rows], total=total, page=page,
-        pages=max(1, -(-total // PAGE)), status=status, q=query, counts=counts, statuses=service.LEAD_STATUSES)
+        pages=max(1, -(-total // PAGE)), status=status, q=query, counts=counts, statuses=service.LEAD_STATUSES,
+        needs_email=db.val("SELECT COUNT(*) FROM prospects WHERE status IN ('needs_email', 'guessed', 'searching')",
+                           default=0),
+        needs_email_lists=db.q("SELECT p.list_id, l.name, COUNT(*) AS n FROM prospects p JOIN lists l ON l.id = p.list_id "
+                               "WHERE p.status IN ('needs_email', 'guessed', 'searching') GROUP BY p.list_id LIMIT 5"))
 
 
 def _contact(contact_id):
@@ -174,6 +178,7 @@ def lead(contact_id):
             news_error = str(exc)
     return flask.render_template(
         'lead.html', active='leads', c=row, extra=loads(row['fields']), company=company_of(row),
+        brief=_brief_fields(loads(row['fields']), limit=6),
         news_company=news_company, headlines=headlines, news_error=news_error,
         thread=replies.thread_for(db, contact_id, row['email'], _cfg()),
         tasks=db.q('SELECT * FROM tasks WHERE contact_id = ? ORDER BY done_at IS NOT NULL, due_at', contact_id),
@@ -344,6 +349,8 @@ def list_remove_invalid(list_id):
 def campaign_written(campaign_id):
     db = _db()
     campaign = service.get_campaign(db, campaign_id)
+    if campaign['ai_mode'] == 'own':
+        return flask.redirect(flask.url_for('ui.campaign_each', campaign_id=campaign_id))
     status = flask.request.args.get('status', '')
     page = max(1, flask.request.args.get('page', 1, type=int))
     where, args = 'p.campaign_id = ?', [campaign_id]
@@ -422,3 +429,51 @@ def domains():
         hostname=cfg.HOSTNAME, ip=domainsetup.server_ip(cfg), mail_server=cfg.MAIL_SERVER, admin=cfg.WEB_ADMIN,
         has_cloudflare=bool(settings.get('cloudflare_token')),
         done=sum(1 for r in records if r['state'] == 'ok'))
+
+
+# -- a different email for each lead ------------------------------------------------------------
+@bp.route('/campaigns/<int:campaign_id>/each', methods=['GET', 'POST'])
+def campaign_each(campaign_id):
+    db = _db()
+    campaign = service.get_campaign(db, campaign_id)
+    editable = campaign['status'] in service.EDITABLE
+    if flask.request.method == 'POST':
+        if not editable:
+            raise service.Problem('This campaign has started; its emails can no longer change.')
+        form = flask.request.form
+        contact_id = form.get('contact_id', type=int)
+        if not db.one('SELECT 1 FROM list_members WHERE list_id = ? AND contact_id = ?', campaign['list_id'] or 0,
+                      contact_id or 0):
+            flask.abort(404)
+        if form.get('action') == 'main':
+            perlead.clear_one(db, campaign_id, contact_id)
+            flask.flash('This lead gets the main email.')
+        else:
+            try:
+                perlead.save_one(db, campaign_id, contact_id, form.get('subject', ''), form.get('text', ''))
+            except ValueError as exc:
+                raise service.Problem(str(exc))
+            flask.flash('Saved. This is the email they get.')
+        return flask.redirect(_back(flask.url_for('ui.campaign_each', campaign_id=campaign_id)) + f'#lead-{contact_id}')
+    page = max(1, flask.request.args.get('page', 1, type=int))
+    query = flask.request.args.get('q', '').strip()[:100]
+    only = flask.request.args.get('only', '')
+    rows, total = perlead.members(db, campaign, query=query, only=only, page=page)
+    leads, examples = perlead.placeholders(db, campaign_id, service.BRACKETS_RE)
+    return flask.render_template('each.html', active='campaigns', c=campaign, rows=rows, total=total, page=page,
+                                 pages=max(1, -(-total // 20)), q=query, only=only, editable=editable,
+                                 counts=perlead.counts(db, campaign), gaps={'leads': leads, 'examples': examples})
+
+
+@bp.route('/campaigns/<int:campaign_id>/each/replace', methods=['POST'])
+def campaign_each_replace(campaign_id):
+    db = _db()
+    campaign = service.get_campaign(db, campaign_id)
+    if campaign['status'] not in service.EDITABLE:
+        raise service.Problem('This campaign has started; its emails can no longer change.')
+    find = flask.request.form.get('find', '')
+    if not find.strip():
+        raise service.Problem('Type the text to find, for example [Your name].')
+    changed = perlead.replace_all(db, campaign_id, find, flask.request.form.get('replace', ''))
+    flask.flash(f'Replaced in {changed} email{"s" if changed != 1 else ""}.' if changed else f'"{find}" was not found.')
+    return flask.redirect(flask.url_for('ui.campaign_each', campaign_id=campaign_id))

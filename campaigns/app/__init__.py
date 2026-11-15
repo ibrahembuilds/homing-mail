@@ -62,8 +62,10 @@ def create_app(cfg=None):
     app.db.init(seed=cfg.SEED)
     from . import team
     team.ensure_owner(app.db, cfg.OWNER_EMAIL)
+    from . import agent_runs
+    agent_runs.recover(app.db)       # nothing can still be running in a fresh process
 
-    from .views import api, public, ui, ui_accounts, ui_outreach, ui_team  # noqa: F401  (these add pages to ui.bp)
+    from .views import api, public, ui, ui_accounts, ui_compose, ui_mail, ui_offers, ui_outreach, ui_team  # noqa: F401  (pages on ui.bp)
     app.register_blueprint(ui.bp, url_prefix=prefix)
     app.register_blueprint(public.bp, url_prefix=prefix + '/t')
     app.register_blueprint(api.bp, url_prefix=prefix + '/api')

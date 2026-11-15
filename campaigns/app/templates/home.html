@@ -4,7 +4,6 @@
 {% block body %}
 <div class="head">
   <div>
-    <div class="eyebrow">Last 30 days</div>
     <h1>Home</h1>
     <div class="sub">{{ contacts_count|num }} active leads in {{ lists_count }} list{{ '' if lists_count == 1 else 's' }}</div>
   </div>
@@ -26,16 +25,15 @@
 {% set todo = checklist|rejectattr('done')|list %}
 {% if todo %}
 <section class="card getting-started">
-  <div class="card-head"><h2>Get started</h2><span class="muted small num">{{ checklist|length - todo|length }} of {{ checklist|length }} done</span></div>
+  <div class="card-head"><h2>Still to set up</h2><span class="muted small num">{{ checklist|length - todo|length }} of {{ checklist|length }} done</span></div>
   <div class="progress"><span style="width: {{ 100 * (checklist|length - todo|length) / checklist|length }}%"></span></div>
   <ul class="checklist">
-    {% for item in checklist %}
-    <li><span class="dot {{ 'done' if item.done }}">{{ '✓' if item.done }}</span>
-      {% if item.done %}<span class="muted">{{ item.text }}</span>{% else %}<a href="{{ item.href }}">{{ item.text }}</a>{% endif %}</li>
-    {% endfor %}
+    {% for item in todo %}<li><span class="dot"></span><a href="{{ item.href }}">{{ item.text }}</a></li>{% endfor %}
   </ul>
 </section>
 {% endif %}
+
+{% if new_replies or today_tasks %}
 <div class="grid two">
   <section class="card flush">
     <div class="card-head"><h2>New replies</h2><a class="small" href="{{ url_for('ui.inbox') }}">Open inbox</a></div>
@@ -49,9 +47,7 @@
       </tr>
       {% endfor %}
     </tbody></table>
-    {% else %}
-    {{ ui.empty('No replies waiting', 'Replies from your leads appear here as soon as they arrive.') }}
-    {% endif %}
+    {% else %}<p class="quiet-line">No replies waiting.</p>{% endif %}
   </section>
   <section class="card flush">
     <div class="card-head"><h2>Follow-ups due today</h2><a class="small" href="{{ url_for('ui.calendar') }}">Open calendar</a></div>
@@ -61,25 +57,31 @@
       <tr>
         <td>{% if t.contact_id %}<a href="{{ url_for('ui.lead', contact_id=t.contact_id) }}">{{ t.title }}</a>{% else %}{{ t.title }}{% endif %}
           <div class="muted tiny">{{ ui.lead_name(t) if t.contact_id else '' }}</div></td>
-        <td class="nowrap num small {{ 'muted' }}">{{ t.due_at|dt('%d %b %H:%M') }}</td>
+        <td class="nowrap num small muted">{{ t.due_at|dt('%d %b %H:%M') }}</td>
         <td class="right"><form class="inline" method="post" action="{{ url_for('ui.task_update', task_id=t.id) }}">{{ ui.csrf() }}<button class="btn small" name="action" value="done">Done</button></form></td>
       </tr>
       {% endfor %}
     </tbody></table>
-    {% else %}
-    {{ ui.empty('Nothing due today', 'Add follow-ups from a lead or a reply, and they show up here on the day.') }}
-    {% endif %}
+    {% else %}<p class="quiet-line">Nothing due today.</p>{% endif %}
   </section>
 </div>
+{% else %}
+<div class="today-strip">
+  <span><svg aria-hidden="true"><use href="#i-inbox"/></svg>No replies waiting</span>
+  <span><svg aria-hidden="true"><use href="#i-calendar"/></svg>Nothing due today</span>
+  <a href="{{ url_for('ui.agent_home') }}"><svg aria-hidden="true"><use href="#i-spark"/></svg>Ask the AI agent</a>
+</div>
+{% endif %}
 
-
-{{ ui.stat_tiles(totals) }}
-
-<section class="card">
-  <h2>Activity</h2>
-  {% if totals.sent %}{{ ui.chart(series) }}{% else %}{{ ui.empty('No emails sent yet', 'Results appear here after your first campaign.') }}{% endif %}
-  {% if warmup is not none %}<p class="muted small" style="margin-top:10px">Warm-up is on: <span class="num">{{ sent_today|num }}</span> of today's <span class="num">{{ warmup|num }}</span> campaign emails used.</p>{% endif %}
-</section>
+{% if totals.sent %}
+{% if totals.bounce_rate > 5 %}
+<div class="notice warn"><strong>{{ totals.hard_bounced }} of your emails went to addresses that do not exist ({{ totals.bounce_rate|pct }}).</strong>
+  They are on the do-not-email list now, so nobody gets mailed twice. Keep this under 2%: check new lists before sending, and use addresses published on the company's own site.</div>
+{% endif %}
+<h2 class="section-title">Last 30 days</h2>
+{{ ui.key_numbers(totals, url_for('ui.analytics')) }}
+{% if warmup is not none %}<p class="muted small">Warm-up is on: <span class="num">{{ sent_today|num }}</span> of today's <span class="num">{{ warmup|num }}</span> campaign emails used.</p>{% endif %}
+{% endif %}
 
 <section class="card flush">
   <div class="card-head"><h2>Recent campaigns</h2><a class="small" href="{{ url_for('ui.campaigns') }}">All campaigns</a></div>

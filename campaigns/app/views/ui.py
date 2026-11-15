@@ -4,14 +4,17 @@ import csv
 import hmac
 import io
 import json
+import re
 import secrets
 import time
 from urllib.parse import urlparse
 
 import flask
 
-from .. import (agent, bounces, contacts, dnscheck, leadtools, mailboxes, planner, security, sender, service, stats,
-                team, writer)
+from markupsafe import Markup
+
+from .. import (agent, agent_runs, bounces, contacts, dnscheck, leadtools, mailboxes, offers, perlead, planner,
+                prospects, security, sender, service, stats, team, textfmt, writer)
 from ..ai_common import ProviderError
 from ..config import DEFAULT_SETTINGS, SECRET_SETTINGS
 from ..db import loads, now
@@ -232,10 +235,10 @@ def lists():
         with db.tx():
             list_id = db.run('INSERT INTO lists (name, description, created_at) VALUES (?, ?, ?)',
                              name, flask.request.form.get('description', '').strip()[:500], now()).lastrowid
-            if rows:
-                summary = contacts.import_rows(db, list_id, rows)
-                summary['columns'] = columns
-                flask.session['import_summary'] = summary
+        if rows:
+            summary = prospects.import_upload(db, list_id, rows)
+            summary['columns'] = columns
+            flask.session['import_summary'] = summary
         return flask.redirect(flask.url_for('ui.list_detail', list_id=list_id))
     rows = [{'row': r, 'counts': contacts.list_counts(db, r['id'])} for r in db.q('SELECT * FROM lists ORDER BY id DESC')]
     return flask.render_template('lists.html', active='lists', lists=rows)
@@ -272,13 +275,52 @@ def list_detail(list_id):
     summary = flask.session.pop('import_summary', None)
     return flask.render_template(
         'list.html', active='lists', list=row, counts=contacts.list_counts(db, list_id),
-        members=[dict(m, extra=loads(m['fields'])) for m in members], total=total, page=page,
+        members=[dict(m, extra=_brief_fields(loads(m['fields']))) for m in members], total=total, page=page,
         pages=max(1, -(-total // PAGE)), q=query, status=status, summary=summary,
         verify=flask.session.pop('verify_summary', None),
         verify_counts={r['verify_status'] or 'unchecked': r['n'] for r in db.q(
             'SELECT c.verify_status, COUNT(*) AS n FROM list_members m JOIN contacts c ON c.id = m.contact_id '
             'WHERE m.list_id = ? GROUP BY c.verify_status', list_id)},
-        results=next((r for r in stats.by_list(db) if r['key'] == list_id), None))
+        results=next((r for r in stats.by_list(db) if r['key'] == list_id), None),
+        waiting=[dict(p, label=prospects.label(p)) for p in prospects.waiting(db, list_id)],
+        pcounts=prospects.counts(db, list_id), prospect_labels=prospects.STATUSES)
+
+
+@bp.route('/lists/<int:list_id>/find-emails', methods=['POST'])
+def list_find_emails(list_id):
+    _list(list_id)
+    started = agent_runs.find_emails(_db(), list_id)
+    flask.flash(f'Looking for the emails of {started} lead{"" if started == 1 else "s"} on their websites.' if started
+                else 'No leads are waiting for an email search.')
+    return flask.redirect(flask.url_for('ui.list_detail', list_id=list_id) + '#no-email')
+
+
+@bp.route('/lists/<int:list_id>/prospects/<int:prospect_id>', methods=['POST'])
+def list_prospect(list_id, prospect_id):
+    db = _db()
+    _list(list_id)
+    if not db.one('SELECT id FROM prospects WHERE id = ? AND list_id = ?', prospect_id, list_id):
+        flask.abort(404)
+    if flask.request.form.get('action') == 'dismiss':
+        prospects.dismiss(db, prospect_id)
+    else:
+        try:
+            prospects.set_email(db, prospect_id, flask.request.form.get('email', ''))
+        except ValueError as exc:
+            raise service.Problem(str(exc))
+        flask.flash('Added to the list.')
+    return flask.redirect(flask.url_for('ui.list_detail', list_id=list_id) + '#no-email')
+
+
+BRIEF_KEYS = ('company', 'business', 'company_name', 'organisation', 'organization', 'role', 'title', 'job_title',
+              'location', 'city', 'country', 'website', 'current_website', 'domain')
+
+
+def _brief_fields(fields, limit=3):
+    """A few short, useful columns of a lead for tables: (shown, how many more)."""
+    keys = [k for k in BRIEF_KEYS if fields.get(k)] + [k for k in fields if k not in BRIEF_KEYS]
+    shown = [(k, fields[k]) for k in keys if fields[k] and len(str(fields[k])) <= 80][:limit]
+    return {'shown': shown, 'more': max(0, len([k for k in fields if fields[k]]) - len(shown))}
 
 
 def _read_upload(required=False):
@@ -299,7 +341,7 @@ def _read_upload(required=False):
     except ValueError as exc:
         raise service.Problem(str(exc))
     if not rows:
-        raise service.Problem('No email addresses were found. The file needs a column of email addresses.')
+        raise service.Problem('No leads were found. The file needs a column of email addresses or websites.')
     return rows, columns
 
 
@@ -308,7 +350,7 @@ def list_import(list_id):
     db = _db()
     _list(list_id)
     rows, columns = _read_upload(required=True)
-    summary = contacts.import_rows(db, list_id, rows)
+    summary = prospects.import_upload(db, list_id, rows)
     summary['columns'] = columns
     flask.session['import_summary'] = summary
     return flask.redirect(flask.url_for('ui.list_detail', list_id=list_id))
@@ -436,11 +478,14 @@ def campaign(campaign_id):
         steps=db.q('SELECT * FROM campaign_steps WHERE campaign_id = ? ORDER BY position', campaign_id),
         steps_editable=service.steps_editable(row), send_if=service.SEND_IF,
         ai_modes=writer.MODES, ai_ready=agent.configured(settings),
-        writing=writer.progress(db, campaign_id) if row['ai_mode'] else None,
+        writing=writer.progress(db, campaign_id) if row['ai_mode'] in writer.AI_MODES else None,
+        own=perlead.counts(db, row) if row['ai_mode'] == 'own' else None,
+        own_columns=perlead.columns(db, row['list_id']) if row['list_id'] else [],
+        own_guess=perlead.guess(perlead.columns(db, row['list_id'])) if row['list_id'] else ('', ''),
         writing_samples=db.q("SELECT p.*, c.email, c.first_name, c.last_name FROM personalizations p "
                              "JOIN contacts c ON c.id = p.contact_id WHERE p.campaign_id = ? "
                              "AND p.status IN ('done', 'edited', 'failed') ORDER BY p.updated_at DESC LIMIT 3",
-                             campaign_id) if row['ai_mode'] else [],
+                             campaign_id) if row['ai_mode'] in writer.AI_MODES else [],
         preview_results=flask.session.pop(f'ai_preview_{campaign_id}', None),
         writer_error=db.state('writer_error'),
         accounts=mailboxes.summary(db, day_start(settings)),
@@ -540,6 +585,24 @@ def campaign_save(campaign_id):
         flask.flash(f'The AI is writing the emails for {added or "the remaining"} leads in the background. '
                     'You can leave this page; sending waits until each email is ready.')
         return flask.redirect(target + '#ai')
+    if action == 'own_columns':
+        if not row['list_id']:
+            raise service.Problem('Choose the list first.')
+        body_col = form.get('own_body_col', '')
+        if not body_col:
+            raise service.Problem("Choose the column that holds each lead's message.")
+        result = perlead.fill_from_columns(db, row, form.get('own_subject_col', ''), body_col)
+        flask.flash(f'{result["filled"]} lead{"s" if result["filled"] != 1 else ""} now have their own email from '
+                    f'"{body_col}".' + (f' {result["empty"]} had nothing in that column and get the main email.'
+                                        if result['empty'] else ''))
+        return flask.redirect(target + '#ai')
+    if action == 'own_draft':
+        if not row['list_id']:
+            raise service.Problem('Choose the list first.')
+        added = perlead.fill_from_draft(db, row)
+        flask.flash(f'{added} lead{"s" if added != 1 else ""} got a copy of the main email to edit.' if added
+                    else 'Every lead already has their own email.')
+        return flask.redirect(flask.url_for('ui.campaign_each', campaign_id=campaign_id))
     if action == 'ai_retry':
         count = writer.retry_failed(db, campaign_id)
         flask.flash(f'{count} email{"s" if count != 1 else ""} will be written again.')
@@ -582,16 +645,42 @@ def campaign_state(campaign_id):
 
 @bp.route('/campaigns/<int:campaign_id>/preview')
 def campaign_preview(campaign_id):
+    """The first email as one lead gets it (?contact=id), else as a sample lead gets it."""
     db = _db()
     row = service.get_campaign(db, campaign_id)
-    _, html, _ = Renderer(_cfg(), db).campaign_bodies(row, service.sample_contact(db, row), '0' * 32,
-                                                     db.settings(), tracking=False)
+    contact_id = flask.request.args.get('contact', type=int)
+    contact = None
+    if contact_id:
+        contact = db.one('SELECT c.* FROM list_members m JOIN contacts c ON c.id = m.contact_id '
+                         'WHERE m.list_id = ? AND c.id = ?', row['list_id'] or 0, contact_id)
+        if contact is None:
+            flask.abort(404)
+    contact = contact or service.sample_contact(db, row)
+    extra = {}
+    if row['ai_mode'] and contact['id']:
+        content = sender.message_content(db, row, {'contact_id': contact['id'], 'step': 0, 'parent_id': None})
+        extra = {'content': content['content'], 'ai_line': content['ai_line']}
+    subject, html, _ = Renderer(_cfg(), db).campaign_bodies(row, contact, '0' * 32, db.settings(), tracking=False,
+                                                           **extra)
+    if flask.request.args.get('framed'):
+        html = _framed(subject, contact, html)
     response = flask.Response(html, mimetype='text/html')
     # The preview is untrusted author HTML: no scripts, no access to this site.
     # Author HTML: no scripts, forms or plugins; may only be framed by this app.
     response.headers['Content-Security-Policy'] = ("default-src 'none'; img-src * data:; style-src 'unsafe-inline'; "
                                                    "form-action 'none'; frame-ancestors 'self'")
     return response
+
+
+def _framed(subject, contact, html):
+    """A preview page with the subject and recipient above the email."""
+    import html as html_lib
+    head = ('<div style="font:14px Arial,sans-serif;padding:12px 16px;background:#f6f6fa;border-bottom:1px solid #e1e0ea">'
+            f'<div style="color:#5f5d76">To: {html_lib.escape(contact["email"])}</div>'
+            f'<div style="font-size:16px;font-weight:bold;margin-top:4px">{html_lib.escape(subject)}</div></div>')
+    if '<body' in html.lower():
+        return re.sub(r'(<body[^>]*>)', lambda m: m.group(1) + head, html, count=1, flags=re.IGNORECASE)
+    return head + html
 
 
 # -- emails -----------------------------------------------------------------------
@@ -610,7 +699,7 @@ def emails():
         where += ' AND m.opened_at IS NOT NULL'
     elif status == 'clicked':
         where += ' AND m.clicked_at IS NOT NULL'
-    if kind in ('campaign', 'api', 'test', 'agent'):
+    if kind in ('campaign', 'api', 'test', 'agent', 'single', 'reply'):
         where += ' AND m.kind = ?'
         args.append(kind)
     if query:
@@ -682,49 +771,78 @@ def _thread(thread_id):
     return row
 
 
+_OLD_UPLOAD_RE = re.compile(r'\n*\[Uploaded (?P<file>[^:\]]+):[^\]]*\]\s*$')
+
+
+def _user_block(message):
+    body = message['content']
+    shown = body.get('shown')
+    attachment = body.get('attachment')
+    if shown is None:
+        shown = body.get('text', '')
+        match = _OLD_UPLOAD_RE.search(shown)       # conversations from before attachments were stored apart
+        if match:
+            attachment = attachment or {'file': match.group('file').strip()}
+            shown = shown[:match.start()]
+    html = Markup('<br>'.join(Markup.escape(line) for line in shown.strip().split('\n')))
+    return {'kind': 'user', 'id': message['id'], 'html': html, 'attachment': attachment}
+
+
 def _present(messages):
-    """Flattens stored agent messages into what the chat page shows."""
-    out = []
-    names = {}
+    """Stored agent messages -> blocks for the chat: the owner's messages, the agent's answers
+    (formatted), and the steps it took folded into one block between them."""
+    out, calls = [], {}
     for message in messages:
         body = message['content']
         if message['role'] == 'user':
-            out.append({'kind': 'user', 'text': body.get('text', '')})
+            out.append(_user_block(message))
         elif message['role'] == 'assistant':
             for call in body.get('tool_calls') or []:
-                names[call['id']] = call
-            if body.get('text'):
-                out.append({'kind': 'assistant', 'text': body['text']})
+                calls[call['id']] = call
+            if body.get('text', '').strip():
+                out.append({'kind': 'assistant', 'id': message['id'],
+                            'html': textfmt.markdown(textfmt.plain_punctuation(body['text']))})
             if body.get('note'):
-                out.append({'kind': 'note', 'text': body['note']})
+                out.append({'kind': 'note', 'id': message['id'], 'text': body['note']})
         elif message['role'] == 'tool':
+            items = []
             for result in body.get('results', []):
-                call = names.get(result['id'], {})
-                out.append({'kind': 'tool', 'name': result.get('name', ''), 'error': bool(result.get('is_error')),
-                            'summary': _tool_summary(result.get('name', ''), call.get('input') or {},
-                                                     result.get('output', ''), bool(result.get('is_error')))})
+                call = calls.get(result['id'], {})
+                error = bool(result.get('is_error'))
+                items.append({'error': error, 'text': _tool_summary(result.get('name', ''), call.get('input') or {},
+                                                                     result.get('output', ''), error)})
+            if out and out[-1]['kind'] == 'steps':
+                out[-1]['items'] += items
+            else:
+                out.append({'kind': 'steps', 'id': message['id'], 'items': items})
     return out
 
 
 TOOL_LABELS = {
-    'get_overview': 'Looked at the account', 'list_contact_lists': 'Looked at the contact lists',
+    'get_overview': 'Looked at the account', 'list_contact_lists': 'Looked at your lists',
     'list_campaigns': 'Looked at the campaigns', 'get_campaign': 'Opened campaign',
     'create_campaign': 'Created a draft campaign', 'update_campaign': 'Edited campaign',
-    'check_campaign': 'Ran the content check', 'send_test_email': 'Sent a test email',
+    'check_campaign': 'Checked the email', 'send_test_email': 'Sent a test email',
     'schedule_campaign': 'Scheduling campaign', 'change_campaign_state': 'Changed campaign state',
     'get_statistics': 'Read the results', 'send_email': 'Prepared an email',
-    'set_ai_writing': 'Set up AI writing', 'preview_ai_writing': 'Tried AI writing on a few leads',
+    'set_ai_writing': 'Set up AI writing', 'preview_ai_writing': 'Wrote samples for a few leads',
+    'use_own_email_per_lead': 'Gave each lead their own email',
     'add_follow_up': 'Added a follow-up', 'get_inbox': 'Read the inbox', 'send_reply': 'Prepared a reply',
     'set_lead_status': 'Moved a lead', 'create_task': 'Added a follow-up to the calendar',
     'list_tasks': 'Looked at the calendar', 'find_email': 'Looked for an email address',
-    'check_email': 'Checked email addresses', 'research_website': 'Read a company website',
-    'list_leads': 'Read the leads', 'lead_news': 'Searched the latest news',
-    'set_reply_autopilot': 'Changed how the AI answers replies',
+    'check_email': 'Checked email addresses', 'research_website': 'Read a website',
+    'list_leads': 'Read the leads', 'lead_news': 'Read the latest news',
+    'set_reply_autopilot': 'Changed how the AI answers replies', 'search_leads': 'Searched your leads',
+    'get_lead': 'Opened a lead', 'research_lead': 'Researched a lead', 'save_lead_notes': 'Saved notes on a lead',
+    'update_lead': 'Updated a lead', 'list_prospects': 'Looked at leads without an email',
+    'find_missing_emails': 'Looked for emails on their websites', 'set_prospect_email': 'Added a lead to the list',
+    'create_list': 'Created a list', 'add_leads': 'Added leads', 'get_offers': 'Read your offers',
+    'save_offer': 'Saved the offer', 'web_search': 'Searched the web',
 }
 
 
 def _tool_summary(name, args, output, is_error):
-    label = TOOL_LABELS.get(name, name)
+    label = TOOL_LABELS.get(name, name.replace('_', ' ').capitalize())
     try:
         data = json.loads(output)
     except ValueError:
@@ -736,7 +854,7 @@ def _tool_summary(name, args, output, is_error):
         if name in ('create_campaign', 'update_campaign', 'check_campaign'):
             check = data.get('check') or {}
             verdict = {'good': 'no problems', 'review': 'worth a look', 'fix': 'needs fixes'}.get(check.get('verdict'), '')
-            detail = f'#{data.get("campaign_id")}' + (f', check: {verdict}' if verdict else '')
+            detail = f'#{data.get("campaign_id")}' + (f', {verdict}' if verdict else '')
         elif name == 'schedule_campaign':
             waiting = data.get('status') == 'pending_approval'
             detail = (f'#{data.get("campaign_id")} to {data.get("recipients")} contacts: '
@@ -749,13 +867,38 @@ def _tool_summary(name, args, output, is_error):
             detail = f'#{data.get("campaign_id")} is now {data.get("status")}'
         elif name in ('get_campaign', 'get_statistics') and args.get('campaign_id'):
             detail = f'#{args["campaign_id"]}'
+        elif name == 'find_missing_emails' and 'checked' in data:
+            detail = (f'{len(data.get("added") or [])} found and added, {len(data.get("guessed") or [])} guessed, '
+                      f'{len(data.get("not_found") or [])} not found')
+        elif name == 'add_leads':
+            detail = f'{data.get("added", 0)} added' + (f', {data["need_an_email"]} need an email' if data.get('need_an_email') else '')
+        elif name in ('research_lead', 'get_lead', 'save_lead_notes', 'update_lead'):
+            detail = str(data.get('lead') or data.get('email') or args.get('email') or '')
+        elif name == 'web_search':
+            detail = f'"{args.get("query", "")}"'
+        elif name == 'save_offer':
+            detail = f'"{data.get("name", "")}"'
+    if name == 'research_website' and args.get('url'):
+        detail = args['url']
+    if name in ('find_missing_emails', 'add_leads') and detail:
+        return f'{label}: {detail}'
     return f'{label} {detail}'.strip()
+
+
+def _agent_state(thread_id):
+    db = _db()
+    pending = service.pending_approvals(db)
+    return dict(agent_runs.state(db, thread_id), pending=len(pending['campaigns']) + len(pending['messages']))
+
+
+def _blocks_html(blocks):
+    return flask.render_template('chat_blocks.html', blocks=blocks)
 
 
 @bp.route('/agent')
 def agent_home():
     db = _db()
-    latest = db.one('SELECT id FROM agent_threads ORDER BY updated_at DESC LIMIT 1')
+    latest = db.one("SELECT id FROM agent_threads WHERE kind = 'outreach' ORDER BY updated_at DESC LIMIT 1")
     thread_id = latest['id'] if latest else agent.new_thread(db)
     return flask.redirect(flask.url_for('ui.agent_thread', thread_id=thread_id))
 
@@ -763,9 +906,11 @@ def agent_home():
 @bp.route('/agent/new', methods=['POST'])
 def agent_new():
     db = _db()
-    empty = db.one('SELECT t.id FROM agent_threads t WHERE NOT EXISTS '
-                   '(SELECT 1 FROM agent_messages m WHERE m.thread_id = t.id) LIMIT 1')
-    thread_id = empty['id'] if empty else agent.new_thread(db)
+    kind = flask.request.form.get('kind', 'outreach')
+    kind = kind if kind in agent.PERSONAS else 'outreach'
+    empty = db.one('SELECT t.id FROM agent_threads t WHERE t.kind = ? AND NOT EXISTS '
+                   '(SELECT 1 FROM agent_messages m WHERE m.thread_id = t.id) LIMIT 1', kind)
+    thread_id = empty['id'] if empty else agent.new_thread(db, kind)
     return flask.redirect(flask.url_for('ui.agent_thread', thread_id=thread_id))
 
 
@@ -775,38 +920,100 @@ def agent_thread(thread_id):
     settings = db.settings()
     thread = _thread(thread_id)
     provider = settings['ai_provider']
+    messages = agent.history(db, thread_id)
+    last_user = next((m['id'] for m in reversed(messages) if m['role'] == 'user'), 0)
     return flask.render_template(
-        'agent.html', active='agent', thread=thread,
-        threads=db.q('SELECT * FROM agent_threads ORDER BY updated_at DESC LIMIT 30'),
-        messages=_present(agent.history(db, thread_id)),
+        'agent.html', active='offers' if thread['kind'] == 'offer' else 'agent', thread=thread,
+        threads=db.q('SELECT * FROM agent_threads WHERE kind = ? ORDER BY updated_at DESC LIMIT 30', thread['kind']),
+        blocks=_present(messages), last_user=last_user, state=agent_runs.state(db, thread_id),
         configured=agent.configured(settings), approvals=service.pending_approvals(db),
         require_approval=settings['ai_require_approval'] == '1',
         provider_label=agent.PROVIDERS[provider].LABEL if provider in agent.PROVIDERS else '',
-        model=settings.get(f'ai_model_{provider}') or getattr(agent.PROVIDERS.get(provider), 'DEFAULT_MODEL', ''))
+        model=settings.get(f'ai_model_{provider}') or getattr(agent.PROVIDERS.get(provider), 'DEFAULT_MODEL', ''),
+        offer=db.one('SELECT * FROM offers ORDER BY updated_at DESC LIMIT 1'))
+
+
+def _attachment_note(db, attachment):
+    """What the agent is told about leads attached in the chat (from the database, not the browser)."""
+    try:
+        list_id = int(attachment.get('list_id'))
+    except (TypeError, ValueError):
+        return None, None
+    row = db.one('SELECT * FROM lists WHERE id = ?', list_id)
+    if row is None:
+        return None, None
+    counts = contacts.list_counts(db, list_id)
+    waiting = prospects.counts(db, list_id)
+    columns = set()
+    for member in db.q('SELECT c.fields FROM list_members m JOIN contacts c ON c.id = m.contact_id '
+                       'WHERE m.list_id = ? LIMIT 50', list_id):
+        columns.update(loads(member['fields']).keys())
+    for prospect in db.q('SELECT fields FROM prospects WHERE list_id = ? LIMIT 50', list_id):
+        columns.update(loads(prospect['fields']).keys())
+    file = str(attachment.get('file') or row['name'])[:120]
+    need = waiting.get('needs_email', 0)
+    note = (f'[Attached file "{file}": it became list "{row["name"]}" (list_id {list_id}) with {counts["total"]} '
+            f'leads that have an email' + (f' and {need} without one (find_missing_emails can look for them)' if need else '')
+            + (f'. Columns: {", ".join(sorted(columns)[:30])}' if columns else '') + '.]')
+    info = {'list_id': list_id, 'name': row['name'], 'file': file, 'leads': counts['total'], 'needs_email': need}
+    return note, info
 
 
 @bp.route('/agent/<int:thread_id>/send', methods=['POST'])
 def agent_send(thread_id):
     db = _db()
-    _thread(thread_id)
+    thread = _thread(thread_id)
     data = flask.request.get_json(silent=True) or {}
-    text = str(data.get('text', '')).strip()
-    if not text:
+    text = str(data.get('text', '')).strip()[:20000]
+    note, info = _attachment_note(db, data.get('attachment') or {}) if data.get('attachment') else (None, None)
+    if not text and info is None:
         return {'error': 'Type a message first.'}, 400
+    shown = text
+    if info is not None and not text:
+        text = shown = ('Read these leads and tell me who they are. Find emails for the ones without one, '
+                        'then suggest a first email.' if thread['kind'] == 'outreach' else 'Here are the leads I email.')
     try:
-        new_messages = agent.reply(db, _cfg(), thread_id, text[:20000])
-    except ProviderError as exc:
-        return {'error': str(exc), 'messages': _present(agent.history(db, thread_id))[-1:]}, 502
+        saved = agent_runs.start(db, _cfg(), thread_id, f'{text}\n\n{note}' if note else text, shown=shown,
+                                 attachment=info)
+    except agent_runs.Busy as exc:
+        return {'error': str(exc)}, 409
     except service.Problem as exc:
         return {'error': str(exc)}, 400
-    pending = service.pending_approvals(db)
-    return {'messages': _present(new_messages)[1:],
-            'pending': len(pending['campaigns']) + len(pending['messages'])}
+    return {'after': saved['id'], 'html': _blocks_html(_present([saved])), **_agent_state(thread_id)}
+
+
+@bp.route('/agent/<int:thread_id>/poll')
+def agent_poll(thread_id):
+    db = _db()
+    _thread(thread_id)
+    after = flask.request.args.get('after', 0, type=int)
+    messages = [m for m in agent.history(db, thread_id) if m['id'] > after]
+    return {'html': _blocks_html(_present(messages)), **_agent_state(thread_id)}
+
+
+@bp.route('/agent/<int:thread_id>/stop', methods=['POST'])
+def agent_stop(thread_id):
+    _thread(thread_id)
+    agent_runs.stop(_db(), thread_id)
+    return {'ok': True}
+
+
+@bp.route('/agent/<int:thread_id>/retry', methods=['POST'])
+def agent_retry(thread_id):
+    db = _db()
+    _thread(thread_id)
+    try:
+        agent_runs.start(db, _cfg(), thread_id)
+    except agent_runs.Busy as exc:
+        return {'error': str(exc)}, 409
+    except service.Problem as exc:
+        return {'error': str(exc)}, 400
+    return _agent_state(thread_id)
 
 
 @bp.route('/agent/<int:thread_id>/upload', methods=['POST'])
 def agent_upload(thread_id):
-    """Leads attached in the chat: become a new list the agent is told about."""
+    """Leads attached in the chat become a new list; the next message tells the agent about it."""
     db = _db()
     _thread(thread_id)
     upload = flask.request.files.get('file')
@@ -819,21 +1026,29 @@ def agent_upload(thread_id):
     except ValueError as exc:
         return {'error': str(exc)}, 400
     if not rows:
-        return {'error': 'No email addresses were found. The file needs a column of email addresses.'}, 400
+        return {'error': 'No leads were found. The file needs a column of email addresses or websites.'}, 400
     name = (upload.filename.rsplit('.', 1)[0].replace('_', ' ').replace('-', ' ').strip() or 'Leads')[:100]
     with db.tx():
         list_id = db.run('INSERT INTO lists (name, description, created_at) VALUES (?, ?, ?)',
                          name, 'Uploaded in the AI chat', now()).lastrowid
-    summary = contacts.import_rows(db, list_id, rows)
+    summary = prospects.import_upload(db, list_id, rows)
+    if not summary['added'] + summary['existing'] + summary['needs_email']:
+        db.run('DELETE FROM lists WHERE id = ?', list_id)
+        return {'error': 'No usable leads: every row lacked both an email address and a website.'}, 400
     named = [key for key in ('first_name', 'last_name') if columns.get(key)]
-    return {'list_id': list_id, 'name': name, 'added': summary['added'] + summary['existing'],
+    return {'list_id': list_id, 'name': name, 'file': upload.filename[:120],
+            'added': summary['added'] + summary['existing'], 'needs_email': summary['needs_email'],
             'invalid': summary['invalid'], 'suppressed': summary['suppressed'],
-            'columns': (['email'] + named + columns['fields'])[:20], 'truncated': columns['truncated']}
+            'columns': ((['email'] if columns.get('email') else []) + named + columns['fields'])[:20]}
 
 
 @bp.route('/agent/<int:thread_id>/delete', methods=['POST'])
 def agent_delete(thread_id):
-    _db().run('DELETE FROM agent_threads WHERE id = ?', thread_id)
+    db = _db()
+    thread = _thread(thread_id)
+    db.run('DELETE FROM agent_threads WHERE id = ?', thread_id)
+    if thread['kind'] == 'offer':
+        return flask.redirect(flask.url_for('ui.offers_page'))
     return flask.redirect(flask.url_for('ui.agent_home'))
 
 
@@ -841,7 +1056,8 @@ def agent_delete(thread_id):
 CHECKBOXES = ('warmup_enabled', 'track_opens', 'track_clicks', 'ai_require_approval', 'imap_verify_tls',
               'ai_web_search')
 SECTIONS = {
-    'sender': ('from_name', 'from_email', 'reply_to', 'postal_address', 'timezone'),
+    'sender': ('from_name', 'from_email', 'reply_to', 'postal_address', 'timezone', 'email_style',
+               'email_signature', 'email_logo_url'),
     'pacing': ('rate_per_hour', 'delay_min', 'delay_max', 'window_start', 'window_end', 'window_days', 'daily_cap',
                'domain_hourly_cap', 'warmup_enabled', 'warmup_start', 'warmup_growth', 'warmup_max',
                'track_opens', 'track_clicks'),
@@ -909,6 +1125,10 @@ def _validate_settings(section, values, current):
         except Exception:
             raise service.Problem(f'Unknown timezone "{values["timezone"]}". Use a name like Europe/Berlin or Asia/Dubai.')
         values['timezone'] = values['timezone'] or 'UTC'
+        values['email_style'] = values['email_style'] if values['email_style'] in ('branded', 'plain') else 'branded'
+        values['email_signature'] = values['email_signature'][:600]
+        if values['email_logo_url'] and not values['email_logo_url'].startswith('https://'):
+            raise service.Problem('The logo address must start with https://')
     elif section == 'pacing':
         for key in ('rate_per_hour', 'delay_min', 'delay_max', 'daily_cap', 'domain_hourly_cap', 'warmup_start', 'warmup_max'):
             if values[key] and not values[key].isdigit():

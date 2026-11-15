@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Each lead's email · {{ c.name }}{% endblock %}
+{% block body %}
+<div class="head">
+  <div>
+    <div class="crumb"><a href="{{ url_for('ui.campaigns') }}">Campaigns</a> / <a href="{{ url_for('ui.campaign', campaign_id=c.id) }}#ai">{{ c.name }}</a> /</div>
+    <h1>Each lead's email</h1>
+    <div class="sub"><strong class="num">{{ counts.own }}</strong> of <span class="num">{{ counts.total }}</span> leads have their own email.{% if counts.own < counts.total %} The others get the main email.{% endif %}</div>
+  </div>
+  <a class="btn" href="{{ url_for('ui.campaign', campaign_id=c.id) }}#ai">Back to the campaign</a>
+</div>
+
+{% if gaps.leads %}
+<div class="notice warn"><strong>{{ gaps.leads }} email{{ 's' if gaps.leads != 1 }} still {{ 'have' if gaps.leads != 1 else 'has' }} text to fill in:</strong>
+  {% for e in gaps.examples %}<code>{{ e }}</code> {% endfor %}. The campaign cannot start until they are gone.</div>
+{% endif %}
+{% if editable and counts.own %}
+<form class="card replace-all" method="post" action="{{ url_for('ui.campaign_each_replace', campaign_id=c.id) }}">{{ ui.csrf() }}
+  <strong>Replace in every email</strong>
+  <input type="text" name="find" value="{{ gaps.examples[0] if gaps.examples else '' }}" placeholder="Find, e.g. [Your name]" aria-label="Text to find" required>
+  <span class="muted">with</span>
+  <input type="text" name="replace" placeholder="Your name" aria-label="Replace with">
+  <button class="btn small primary">Replace</button>
+</form>
+{% endif %}
+
+<div class="mail-bar">
+  <nav class="segmented" aria-label="Show">
+    {% for key, label in (('', 'All'), ('own', 'Own email'), ('main', 'Main email')) %}<a class="{{ 'on' if only == key }}" href="?only={{ key }}{{ '&q=' ~ q|urlencode if q }}">{{ label }}</a>{% endfor %}
+  </nav>
+  <form class="search" method="get"><input type="hidden" name="only" value="{{ only }}"><input type="search" name="q" value="{{ q }}" placeholder="Search leads" aria-label="Search leads"></form>
+</div>
+
+{% for r in rows %}
+<section class="card each" id="lead-{{ r.id }}">
+  <div class="each-who"><strong>{{ ui.lead_name(r) }}</strong> <span class="muted mono small">{{ r.email }}</span>
+    {% if r.own_status == 'edited' %}<span class="badge ok">own email</span>{% else %}<span class="badge plain">main email</span>{% endif %}</div>
+  <form method="post">{{ ui.csrf() }}<input type="hidden" name="contact_id" value="{{ r.id }}">
+    <input class="each-subject" type="text" name="subject" value="{{ r.own_subject or '' }}" placeholder="Subject (empty = the campaign's subject: {{ c.subject }})" maxlength="300" {{ 'disabled' if not editable }} aria-label="Subject for {{ r.email }}">
+    <textarea class="each-text" name="text" rows="{{ 8 if r.own_text else 3 }}" placeholder="Write their email here, or leave it to send them the main email." {{ 'disabled' if not editable }} aria-label="Email for {{ r.email }}">{{ r.own_text or '' }}</textarea>
+    {% if editable %}
+    <div class="actions"><button class="btn small primary" name="action" value="save">Save</button>
+      <a class="btn small" href="{{ url_for('ui.campaign_preview', campaign_id=c.id, contact=r.id, framed=1) }}" target="_blank" rel="noopener">Preview</a>
+      {% if r.own_status == 'edited' %}<button class="btn small ghost" name="action" value="main">Send them the main email instead</button>{% endif %}</div>
+    {% else %}
+    <div class="actions"><a class="btn small" href="{{ url_for('ui.campaign_preview', campaign_id=c.id, contact=r.id, framed=1) }}" target="_blank" rel="noopener">Preview</a></div>
+    {% endif %}
+  </form>
+</section>
+{% else %}
+<section class="card">{{ ui.empty('No leads here' if q or only else 'This campaign has no list yet', 'Choose a list on the campaign first.' if not (q or only) else '') }}</section>
+{% endfor %}
+{% if pages > 1 %}<section class="card flush">{{ ui.pager(page, pages, total, 'leads') }}</section>{% endif %}
+{% endblock %}

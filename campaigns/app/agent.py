@@ -1,73 +1,127 @@
-"""The AI agent: a tool-calling loop over the campaign operations.
+"""The AI agents: a tool-calling loop over the platform's operations.
+
+Two personas share the loop and the tools:
+    outreach   the main assistant: leads, research, campaigns, replies
+    offer      helps the owner write a clear offer that the others then use
 
 Conversations are stored provider-neutrally:
-    user       {"text": ...}
+    user       {"text": ..., "shown": what the owner typed (optional), "attachment": {...} (optional)}
     assistant  {"text": ..., "tool_calls": [{"id", "name", "input"}], "provider", "model", "raw", "note"}
     tool       {"results": [{"id", "name", "output", "is_error"}]}
+
+A turn runs in the background (agent_runs.py); run() reports what it is doing
+through on_step so the chat can show live progress.
 """
+import concurrent.futures
 import json
+import logging
+import re
 import time
 
-from . import (ai, ai_anthropic, ai_openrouter, contacts, leadtools, mailboxes, news, planner, replies, service,
-               stats, writer)
+from . import (ai, ai_anthropic, ai_openrouter, contacts, leadtools, mailboxes, news, offers, perlead, planner,
+               prospects, replies, service, stats, textfmt, writer)
 from .ai_common import ProviderError
 from .db import loads, now
 from .sender import day_start, local_time, queue_single, warmup_cap
 
-PROVIDERS = ai.PROVIDERS
-MAX_STEPS = 12
-MAX_THREAD_MESSAGES = 150
-MAX_OUTPUT = 20000
+log = logging.getLogger('campaigns.agent')
 
-SYSTEM = """You are the email marketing assistant inside a self-hosted mail platform. The person you are \
-talking to owns the account. You help them plan, write, check, schedule and review email campaigns, and you \
-act through the tools you have been given.
+PROVIDERS = ai.PROVIDERS
+MAX_STEPS = 16
+MAX_THREAD_MESSAGES = 200
+MAX_OUTPUT = 20000
+RETRY_DELAYS = (4, 12)   # seconds before trying a temporary AI failure again
+
+REPLY_STYLE = """How to write your replies to the owner
+- Write like a capable colleague in a chat: plain words, short sentences, the answer or the result first.
+- Usually 2 to 6 short lines. Use a list only for 3 or more parallel items (steps, leads, options). No headings, \
+no tables unless asked, and bold at most the one thing they must not miss.
+- No filler ("Great question", "Certainly", "I'd be happy to", "Let me know if you need anything else"), no \
+restating their request, no emoji, no long dashes (— or –).
+- Do the obvious next step yourself instead of asking leave for it, unless it sends email, spends their money or \
+deletes something.
+- End with at most one question, or the next step you will take."""
+
+SYSTEM = """You are the outreach assistant inside a self-hosted email platform. The person you are talking to owns \
+the account. You help them understand and research their leads, find missing email addresses, build lead lists, \
+write, check, schedule and review campaigns, and handle replies. You act through your tools.
 
 How to work
-- Start from facts. Call get_overview before your first action in a conversation so you know the sender \
-identity, the timezone, the pacing defaults and whether sends need the owner's approval. Look up lists and \
-campaigns instead of guessing ids.
-- Write emails as clean, simple HTML with inline styles: a single column, real text, a clear call to action, \
-and alt text on any image. Personalise with merge tags such as {{first_name|there}}; any column from the \
-uploaded list is available as a tag. An unsubscribe link and the postal address are added automatically, so \
-do not write your own unless the owner asks, in which case use {{unsubscribe_url}}.
-- After creating or changing a campaign, run check_campaign and fix what it reports before you schedule. The \
-check exists to make the message better for readers, which is also what keeps it out of the junk folder.
-- Only state things about the owner's business, products, prices or offers that they told you. Ask when a \
-fact you need is missing rather than inventing it.
-- Subjects must describe what is in the email. No fake "Re:" or "Fwd:", no false urgency, no misleading \
-sender names: these are deceptive, illegal in many countries, and they damage the sender's reputation.
-- Mail only goes to the owner's uploaded lists. People who unsubscribed, bounced or complained are skipped \
-automatically and must stay skipped.
-- Pacing protects the sending domain. Keep the account's rate, window and warm-up settings unless the owner \
-asks for a change, and say so if a request would send much faster than the account has been sending.
+- Start from facts. Call get_overview before your first action in a conversation: it gives the sender, the \
+timezone, pacing, whether sends need approval, the lists and the owner's offers. Look things up instead of \
+guessing ids.
+- You can read everything in the account: every list and lead (list_leads, search_leads, get_lead), campaigns, \
+results, replies and the calendar. Check the data before asking the owner something it already answers.
+- What the owner sells comes from their offer (get_offers). Never invent facts about their business, prices, \
+results or clients. Without an offer, ask for the two or three facts you need, or suggest the Offers page where an \
+assistant helps write one.
 
-Leads, follow-ups and replies
-- For cold outreach to business leads, prefer short plain emails, a personal opening ({{ai_line}} with AI \
-writing set to "line") and one or two follow-ups in the same thread a few days apart. Follow-ups stop by \
-themselves when a lead replies or the owner changes the lead's status.
-- set_ai_writing turns on per-lead writing; preview_ai_writing shows a few results so the owner can judge \
-them before anything is sent. With research on, the AI reads each lead's company website first; with news on, \
-it also reads recent headlines about the company.
-- When the owner uploads leads in the chat, you get a message saying which list they became. Read a sample with \
-list_leads, say in one or two lines who they are (roles, companies, which columns can be used), then offer a \
-campaign: short email with {{ai_line}}, AI writing "line" with research and news on, and one follow-up. Use \
-lead_news for a few leads when the owner wants to see what is happening at their companies.
-- check_email tells whether addresses will work before they go on a list. find_email guesses addresses; candidates marked unverified must not be added to a list without the \
-owner's say-so, because bounces damage the sending domain. research_website reads a company's own site.
-- get_inbox shows replies from leads. Draft answers for the owner; send_reply follows the same approval rule \
-as other sends. Use create_task to put a follow-up call or email on the owner's calendar. When the owner \
-wants the AI to read and answer replies by itself, use set_reply_autopilot.
-- You may search the web when it helps (current facts about a company, an industry, a public event). Say \
-where facts came from, and never present a guess as a finding.
+Leads
+- When the owner uploads leads you get a note saying which list they became and how many still need an email. \
+Read a sample with list_leads, then say in two or three lines who they are and which columns you can use.
+- Leads without an email: find_missing_emails looks on each company's own website (home, contact and about \
+pages). Addresses published there are added to the list. Guessed addresses (name@company.com) go on a list only \
+after the owner says yes (set_prospect_email), because bounces damage the sending domain.
+- research_lead reads a lead's website and recent news in one go; web_search finds what is not there. Save what \
+matters with save_lead_notes, with the source, so the per-lead writer can use it. Never present a guess as a \
+finding, and say where facts came from.
+- To build a lead list: create_list, then add_leads. Only add people the owner gave you or businesses whose \
+details you found on public pages (put the page in "source"). The do-not-email list always wins.
+- check_email tells whether addresses will work. find_email guesses one person's address.
+
+Writing emails
+- Short, plain and specific, with one clear ask. Personalise with merge tags such as {{first_name|there}}; any \
+column of the list is a tag. An unsubscribe link and the postal address are added automatically, so do not write \
+your own unless the owner asks, in which case use {{unsubscribe_url}}.
+- When the owner wants each email written for the lead, use AI writing "full" with research on: the writer then \
+writes every lead's email about their situation, why they need it, how it helps them, and up to three of the \
+owner's case studies (from the offer). Ask for real case studies on the Offers page if there are none; never make \
+them up. If the leads already carry a written email in their columns (for example {{email_body}}), offer to send \
+that as it is with use_own_email_per_lead. Add one follow-up in the same thread a few days later.
+- When you write the draft yourself, follow this structure:
+""" + textfmt.EMAIL_STRUCTURE.replace('How a first email is built', '  The first email') + """
+- set_ai_writing turns on per-lead writing; preview_ai_writing shows a few results so the owner can judge them \
+before anything is sent. When each lead already has a written email in a column, use_own_email_per_lead sends \
+each lead their own one in a single campaign.
+- After creating or changing a campaign, run check_campaign and fix what it reports before you schedule.
+- Subjects must describe the email: no fake "Re:" or "Fwd:", no false urgency, no misleading sender names.
+- Mail only goes to the owner's lists. Unsubscribed, bounced and complained people are skipped and stay skipped.
+- Keep the account's pacing unless the owner asks, and say so if a request would send much faster than usual.
+
+Replies and follow-ups
+- get_inbox shows replies from leads. Draft answers for the owner; send_reply follows the approval rule. \
+create_task puts a call or email on the owner's calendar. set_reply_autopilot lets the AI answer replies.
 
 Sending and approval
-- schedule_campaign and send_email report back whether the mail was scheduled or is waiting for the owner's \
-approval. Repeat that status accurately: if it is waiting for approval, say so and tell them it is in the \
-"Waiting for approval" box; never describe it as sent.
-- A tool error means the action did not happen. Say what failed and what you will do about it.
+- schedule_campaign, send_email and send_reply say whether mail was scheduled or is waiting for approval. Repeat \
+that exactly: if it waits for approval, say it is in the "Waiting for approval" box and never call it sent.
+- A tool error means the action did not happen. Say in one line what failed and what you will do.
 
-Keep replies short and concrete: what you did, what you found, and what you need from the owner next."""
+""" + textfmt.STYLE_RULES.replace('How the writing must sound', 'How emails you write must sound') + '\n\n' + REPLY_STYLE
+
+OFFER_SYSTEM = """You help the owner of a small business shape a clear offer for their outreach emails: what they \
+give, who it is for, the problem it fixes, the result, why they can be trusted, and the one small next step a lead \
+should take. The outreach assistant and the per-lead writer use the saved offer whenever they write.
+
+How to work
+- Start with get_offers to see what is saved, and get_overview for the account. If the owner has a website, read \
+it with research_website before asking what it already answers. You may look at their lead lists (list_leads) to \
+fit the offer to the people they are emailing.
+- Ask one or two short questions at a time, in plain words. When you can, propose a concrete answer they can \
+accept or change instead of an open question, for example: Something like "a free homepage redesign, yours to \
+keep, no strings". Close?
+- Push for specifics: a named audience ("independent tutoring businesses in the UK with dated websites"), a result \
+they can see or count, real proof. Never invent proof, clients, numbers, prices or guarantees; leave a part empty \
+rather than guess.
+- A good call to action is small and easy: reply "yes", a 10-minute call, look at a preview.
+- Ask for two or three real case studies: who the client was, the problem they had, what changed (with numbers if \
+the owner has them). Save them in case_studies, one per line. The emails quote them, so they must be true.
+- When you have enough, show the offer as a short draft, one line per part, and ask if it is right. Save it with \
+save_offer once they agree or ask you to save. Then say that the outreach assistant will use it.
+- You can search the web (web_search) for how others in their market describe similar offers, but the offer must \
+stay true to what the owner told you.
+
+""" + REPLY_STYLE
 
 _CAMPAIGN_PROPS = {
     'name': {'type': 'string', 'description': 'Internal name, not shown to recipients.'},
@@ -82,6 +136,8 @@ _CAMPAIGN_PROPS = {
     'html': {'type': 'string', 'description': 'HTML body. A fragment is fine; it is wrapped in a document.'},
     'text': {'type': 'string', 'description': 'Plain-text body. Omit to generate it from the HTML.'},
     'list_id': {'type': 'integer', 'description': 'Contact list to send to (from list_contact_lists).'},
+    'offer_id': {'type': 'integer', 'description': 'Offer the AI writing should use (from get_offers). Omit for the '
+                 'default offer.'},
     'from_name': {'type': 'string'},
     'from_email': {'type': 'string', 'description': 'Must be on a domain this server sends for.'},
     'reply_to': {'type': 'string'},
@@ -93,14 +149,17 @@ _CAMPAIGN_PROPS = {
     'window_end': {'type': 'string', 'description': 'Latest local time of day to send, HH:MM.'},
     'daily_cap': {'type': 'integer', 'description': 'Maximum emails per day for this campaign, 0 = no cap.'},
 }
+_STAGES = [key for key, _ in service.LEAD_STATUSES]
+_OFFER_PROPS = {key: {'type': 'string', 'description': hint} for key, _, hint, _ in offers.FIELDS}
 
 TOOLS = [
     {'name': 'get_overview',
      'description': 'Account facts: brand, default sender, timezone and current local time, pacing defaults, '
-                    'warm-up status, whether sends need approval, and counts of lists and campaigns.',
+                    'warm-up status, whether sends need approval, offers, lists, and counts of leads and campaigns.',
      'input_schema': {'type': 'object', 'properties': {}}},
     {'name': 'list_contact_lists',
-     'description': 'All contact lists with their id, name, number of active contacts and merge-tag fields.',
+     'description': 'All contact lists with their id, name, number of active contacts, leads still needing an email '
+                    'and merge-tag fields.',
      'input_schema': {'type': 'object', 'properties': {}}},
     {'name': 'list_campaigns',
      'description': 'Recent campaigns with status and headline results. Optionally filter by status.',
@@ -166,6 +225,14 @@ TOOLS = [
          'instructions': {'type': 'string'}, 'research': {'type': 'boolean'},
          'news': {'type': 'boolean', 'description': 'Also use recent news headlines about each lead\'s company.'}},
          'required': ['campaign_id', 'mode']}},
+    {'name': 'use_own_email_per_lead',
+     'description': 'Give each lead of a draft campaign their own email, taken from two columns of its list (for '
+                    'example email_subject and email_body). Leads with an empty column get the main email. Use it '
+                    'when the uploaded file already holds a written email per lead.',
+     'input_schema': {'type': 'object', 'properties': {
+         'campaign_id': {'type': 'integer'}, 'body_column': {'type': 'string'},
+         'subject_column': {'type': 'string', 'description': 'Empty = the campaign subject.'}},
+         'required': ['campaign_id', 'body_column']}},
     {'name': 'preview_ai_writing',
      'description': 'Write the AI version for the first few leads now (up to 3) and return them for review. '
                     'Costs one AI call per lead.',
@@ -202,9 +269,7 @@ TOOLS = [
     {'name': 'set_lead_status',
      'description': 'Move a lead in the pipeline. Any status other than new or contacted stops automatic follow-ups.',
      'input_schema': {'type': 'object', 'properties': {
-         'email': {'type': 'string'},
-         'status': {'type': 'string', 'enum': ['new', 'contacted', 'replied', 'interested', 'meeting', 'won',
-                                               'not_interested', 'lost']}},
+         'email': {'type': 'string'}, 'status': {'type': 'string', 'enum': _STAGES}},
          'required': ['email', 'status']}},
     {'name': 'create_task',
      'description': 'Put a follow-up on the owner\'s calendar, optionally for one lead.',
@@ -234,17 +299,124 @@ TOOLS = [
      'description': 'Read a company\'s public home page: title, description, headings and main text.',
      'input_schema': {'type': 'object', 'properties': {'url': {'type': 'string'}}, 'required': ['url']}},
     {'name': 'list_leads',
-     'description': 'The leads in a list with every uploaded column (company, role, website...), lead stage and '
-                    'whether they replied. Up to 50 at a time; use offset for more.',
+     'description': 'The leads in a list with every uploaded column (company, role, website...), lead stage, saved '
+                    'research and whether they replied, plus how many still need an email. Up to 50 at a time; '
+                    'use offset for more.',
      'input_schema': {'type': 'object', 'properties': {
          'list_id': {'type': 'integer'}, 'limit': {'type': 'integer'}, 'offset': {'type': 'integer'}},
          'required': ['list_id']}},
+    {'name': 'search_leads',
+     'description': 'Find leads across all lists by name, email, company or any column text, and/or by stage.',
+     'input_schema': {'type': 'object', 'properties': {
+         'query': {'type': 'string'}, 'stage': {'type': 'string', 'enum': _STAGES},
+         'list_id': {'type': 'integer'}, 'limit': {'type': 'integer', 'description': 'Default 25, at most 50.'}}}},
+    {'name': 'get_lead',
+     'description': 'Everything about one lead: every column, stage, notes, saved research, the lists they are in, '
+                    'every email sent to them (opened, clicked) and every reply, and open tasks.',
+     'input_schema': {'type': 'object', 'properties': {'email': {'type': 'string'}}, 'required': ['email']}},
+    {'name': 'research_lead',
+     'description': 'Research one lead\'s company now: their website (what they do and the email addresses '
+                    'published on it) and recent news. Give the lead\'s email, or a prospect_id for a lead without '
+                    'an email, or a website.',
+     'input_schema': {'type': 'object', 'properties': {
+         'email': {'type': 'string'}, 'prospect_id': {'type': 'integer'}, 'website': {'type': 'string'}}}},
+    {'name': 'save_lead_notes',
+     'description': 'Save facts about a lead (what they do, recent news, what to mention), each with where it came '
+                    'from. The per-lead writer uses these notes. Adds to earlier notes unless replace is true.',
+     'input_schema': {'type': 'object', 'properties': {
+         'email': {'type': 'string'}, 'notes': {'type': 'string'}, 'replace': {'type': 'boolean'}},
+         'required': ['email', 'notes']}},
+    {'name': 'update_lead',
+     'description': 'Correct a lead\'s first or last name, or set columns (company, website, role, city...). Columns '
+                    'become merge tags. An empty value removes a column.',
+     'input_schema': {'type': 'object', 'properties': {
+         'email': {'type': 'string'}, 'first_name': {'type': 'string'}, 'last_name': {'type': 'string'},
+         'fields': {'type': 'object', 'additionalProperties': {'type': 'string'}}},
+         'required': ['email']}},
+    {'name': 'list_prospects',
+     'description': 'Leads in a list that have no email address yet, with what the search found for each.',
+     'input_schema': {'type': 'object', 'properties': {'list_id': {'type': 'integer'}}, 'required': ['list_id']}},
+    {'name': 'find_missing_emails',
+     'description': 'Look for the addresses of a list\'s leads that have none, on each company\'s own website. '
+                    'Addresses published there are added to the list; guesses wait for the owner\'s OK. About a '
+                    'minute for 40 leads.',
+     'input_schema': {'type': 'object', 'properties': {
+         'list_id': {'type': 'integer'},
+         'prospect_ids': {'type': 'array', 'items': {'type': 'integer'}, 'description': 'Only these leads.'}},
+         'required': ['list_id']}},
+    {'name': 'set_prospect_email',
+     'description': 'Add a lead that had no email to its list with this address. Only with an address the owner '
+                    'gave or approved.',
+     'input_schema': {'type': 'object', 'properties': {'prospect_id': {'type': 'integer'}, 'email': {'type': 'string'}},
+                      'required': ['prospect_id', 'email']}},
+    {'name': 'create_list',
+     'description': 'Create an empty lead list.',
+     'input_schema': {'type': 'object', 'properties': {'name': {'type': 'string'}, 'description': {'type': 'string'}},
+                      'required': ['name']}},
+    {'name': 'add_leads',
+     'description': 'Add leads to a list. Each needs an email, or a website so the email can be found later with '
+                    'find_missing_emails. Other keys (company, role, city, notes...) become columns. Put where you '
+                    'found each lead in "source".',
+     'input_schema': {'type': 'object', 'properties': {
+         'list_id': {'type': 'integer'},
+         'leads': {'type': 'array', 'items': {'type': 'object', 'properties': {
+             'email': {'type': 'string'}, 'first_name': {'type': 'string'}, 'last_name': {'type': 'string'},
+             'company': {'type': 'string'}, 'website': {'type': 'string'}, 'role': {'type': 'string'},
+             'city': {'type': 'string'}, 'source': {'type': 'string'}}}}},
+         'required': ['list_id', 'leads']}},
     {'name': 'lead_news',
      'description': 'Recent news headlines (last 60 days, Google News) about a company, or about the company of a '
                     'lead given by email. Use it to personalise a message; mention a headline only if it is clearly '
                     'about that company.',
      'input_schema': {'type': 'object', 'properties': {'company': {'type': 'string'}, 'email': {'type': 'string'}}}},
+    {'name': 'get_offers',
+     'description': 'The owner\'s saved offers: what they give, to whom, the problem, the result, proof and the '
+                    'call to action. The default one applies unless a campaign picks another.',
+     'input_schema': {'type': 'object', 'properties': {}}},
+    {'name': 'save_offer',
+     'description': 'Create an offer, or change one (give offer_id). Only parts the owner told you or agreed to.',
+     'input_schema': {'type': 'object', 'properties': dict({'offer_id': {'type': 'integer'},
+                                                            'make_default': {'type': 'boolean'}}, **_OFFER_PROPS)}},
 ]
+
+WEB_SEARCH_TOOL = {
+    'name': 'web_search',
+    'description': 'Search the web. Returns the best results with their address and a short summary. Use it for '
+                   'facts about a company, person or market that are not in the account, and say where facts '
+                   'came from.',
+    'input_schema': {'type': 'object', 'properties': {'query': {'type': 'string'}}, 'required': ['query']}}
+
+_OFFER_TOOL_NAMES = ('get_overview', 'get_offers', 'save_offer', 'research_website', 'list_contact_lists',
+                     'list_leads', 'search_leads')
+OFFER_TOOLS = [t for t in TOOLS if t['name'] in _OFFER_TOOL_NAMES]
+
+PERSONAS = {
+    'outreach': {'system': SYSTEM, 'tools': TOOLS},
+    'offer': {'system': OFFER_SYSTEM, 'tools': OFFER_TOOLS},
+}
+
+# What a running turn is doing, for the live line under the chat.
+ACTIVITY = {
+    'get_overview': 'Looking at the account', 'list_contact_lists': 'Looking at your lists',
+    'list_campaigns': 'Looking at the campaigns', 'get_campaign': 'Opening the campaign',
+    'create_campaign': 'Creating the campaign', 'update_campaign': 'Editing the campaign',
+    'check_campaign': 'Checking the email', 'send_test_email': 'Sending a test email',
+    'schedule_campaign': 'Scheduling', 'change_campaign_state': 'Changing the campaign',
+    'get_statistics': 'Reading the results', 'send_email': 'Preparing the email',
+    'set_ai_writing': 'Setting up AI writing', 'preview_ai_writing': 'Writing samples for a few leads',
+    'use_own_email_per_lead': 'Giving each lead their own email',
+    'add_follow_up': 'Adding a follow-up', 'get_inbox': 'Reading the inbox', 'send_reply': 'Preparing the reply',
+    'set_reply_autopilot': 'Changing how replies are handled', 'set_lead_status': 'Moving the lead',
+    'create_task': 'Adding it to the calendar', 'list_tasks': 'Looking at the calendar',
+    'find_email': 'Looking for an email address', 'check_email': 'Checking email addresses',
+    'research_website': 'Reading their website', 'list_leads': 'Reading the leads',
+    'search_leads': 'Searching your leads', 'get_lead': 'Opening the lead', 'research_lead': 'Researching the lead',
+    'save_lead_notes': 'Saving notes on the lead', 'update_lead': 'Updating the lead',
+    'list_prospects': 'Looking at leads without an email',
+    'find_missing_emails': 'Looking for emails on their websites', 'set_prospect_email': 'Adding the lead',
+    'create_list': 'Creating the list', 'add_leads': 'Adding the leads', 'lead_news': 'Reading the news',
+    'get_offers': 'Reading your offers', 'save_offer': 'Saving the offer', 'web_search': 'Searching the web',
+}
 
 _STAT_KEYS = ('total', 'queued', 'sent', 'delivered', 'failed', 'bounced', 'hard_bounced', 'opened',
               'human_opened', 'clicked', 'complained', 'unsubscribed', 'delivery_rate', 'open_rate',
@@ -281,10 +453,23 @@ def _report_summary(report, problems):
     }
 
 
+def _company(fields):
+    return next((str(fields[k]) for k in news.COMPANY_FIELDS if fields.get(k)), '')
+
+
+def _lead_brief(row):
+    fields = loads(row['fields'])
+    return {'email': row['email'], 'name': f'{row["first_name"]} {row["last_name"]}'.strip() or None,
+            'company': _company(fields) or None, 'website': leadtools.website_from_fields(fields) or None,
+            'stage': row['lead_status'], 'subscribed': row['status'] == 'active',
+            'has_research': bool(row['research'])}
+
+
 class Toolbox:
-    def __init__(self, db, cfg):
+    def __init__(self, db, cfg, search=None):
         self.db = db
         self.cfg = cfg
+        self.search = search   # web search for providers without a built-in one
 
     def run(self, name, args):
         """Executes one tool call. Returns (output text, is_error)."""
@@ -293,11 +478,14 @@ class Toolbox:
             return json.dumps({'error': f'Unknown tool {name}'}), True
         try:
             result = handler(**(args or {}))
-        except service.Problem as exc:
+        except (service.Problem, ValueError, leadtools.ToolError) as exc:
             return json.dumps({'error': str(exc)}), True
         except TypeError as exc:
             return json.dumps({'error': f'Wrong arguments for {name}: {exc}'}), True
+        except ProviderError as exc:
+            return json.dumps({'error': str(exc)}), True
         except Exception as exc:  # a tool bug must not end the conversation
+            log.exception('tool %s failed', name)
             return json.dumps({'error': f'{name} failed: {type(exc).__name__}: {exc}'[:500]}), True
         text = json.dumps(result, ensure_ascii=False, default=str)
         if len(text) > MAX_OUTPUT:
@@ -314,6 +502,8 @@ class Toolbox:
                                'reply_to': settings['reply_to'] or None},
             'postal_address_set': bool(settings['postal_address'].strip()),
             'owner_notes': settings['ai_brand_voice'].strip() or None,
+            'offers': [{'offer_id': o['id'], 'name': o['name'], 'summary': o['summary'], 'default': bool(o['is_default'])}
+                       for o in offers.everything(db)] or 'none yet (the Offers page helps write one)',
             'timezone': settings['timezone'], 'local_time': local.strftime('%Y-%m-%d %H:%M (%A)'),
             'sends_need_owner_approval': settings['ai_require_approval'] == '1',
             'pacing_defaults': {'rate_per_hour': settings['rate_per_hour'],
@@ -326,8 +516,10 @@ class Toolbox:
                                 'daily_limit': a['row']['daily_limit'], 'sent_today': a['sent_today'],
                                 'sign_in': a['row']['status']}
                                for a in mailboxes.summary(db, day_start(settings))],
-            'lists': db.val('SELECT COUNT(*) FROM lists', default=0),
+            'lists': [{'list_id': r['id'], 'name': r['name']} for r in db.q('SELECT id, name FROM lists ORDER BY id DESC LIMIT 20')],
             'active_contacts': db.val("SELECT COUNT(*) FROM contacts WHERE status = 'active'", default=0),
+            'leads_needing_email': db.val("SELECT COUNT(*) FROM prospects WHERE status IN ('needs_email', 'guessed')",
+                                          default=0),
             'campaigns': db.val('SELECT COUNT(*) FROM campaigns', default=0),
             'last_30_days': _stats(stats.overall(db, now() - 30 * 86400, kind='campaign')),
         }
@@ -340,8 +532,10 @@ class Toolbox:
             for member in self.db.q('SELECT c.fields FROM list_members m JOIN contacts c ON c.id = m.contact_id '
                                     'WHERE m.list_id = ? LIMIT 50', row['id']):
                 fields.update(loads(member['fields']).keys())
+            waiting = prospects.counts(self.db, row['id'])
             out.append({'id': row['id'], 'name': row['name'], 'description': row['description'],
                         'active_contacts': counts['active'], 'total_contacts': counts['total'],
+                        'leads_needing_email': waiting.get('needs_email', 0) + waiting.get('guessed', 0),
                         'merge_tags': ['first_name', 'last_name', 'email'] + sorted(fields)})
         return out
 
@@ -364,8 +558,12 @@ class Toolbox:
         row = service.get_campaign(self.db, campaign_id)
         item = _campaign_summary(self.db, row)
         item.update({'subject_b': row['subject_b'] or None, 'ab_winner': row['ab_winner'] or None,
-                     'skip_risky': bool(row['skip_risky']), 'preheader': row['preheader'], 'from_name': row['from_name'], 'from_email': row['from_email'],
-                     'mailbox_ids': mailboxes.parse_ids(row['mailbox_ids']), 'reply_to': row['reply_to'], 'html': row['html'][:12000], 'text': row['text'][:4000],
+                     'skip_risky': bool(row['skip_risky']), 'preheader': row['preheader'], 'from_name': row['from_name'],
+                     'from_email': row['from_email'], 'offer_id': row['offer_id'],
+                     'mailbox_ids': mailboxes.parse_ids(row['mailbox_ids']), 'reply_to': row['reply_to'],
+                     'html': row['html'][:12000], 'text': row['text'][:4000],
+                     'ai_writing': {'mode': row['ai_mode'] or 'off', 'research': bool(row['ai_research']),
+                                    'news': bool(row['ai_news'])},
                      'rate_per_hour': row['rate_per_hour'], 'window_start': row['window_start'],
                      'window_end': row['window_end'], 'daily_cap': row['daily_cap']})
         if row['started_at']:
@@ -488,6 +686,19 @@ class Toolbox:
             out['note'] = 'Add {{ai_line}} to the email where the personal line should go (update_campaign).'
         return out
 
+    def tool_use_own_email_per_lead(self, campaign_id, body_column, subject_column=''):
+        db = self.db
+        campaign = service.get_campaign(db, campaign_id)
+        cols = perlead.columns(db, campaign['list_id'])
+        for col in (body_column, subject_column):
+            if col and col not in cols:
+                raise service.Problem(f'The list has no column "{col}". Its columns: {", ".join(cols) or "none"}.')
+        row = service.update_campaign(db, db.settings(), campaign_id, {'ai_mode': 'own'})
+        result = perlead.fill_from_columns(db, row, subject_column, body_column)
+        return {'campaign_id': campaign_id, 'leads_with_own_email': result['filled'],
+                'leads_getting_the_main_email': result['empty'],
+                'note': 'The owner can read and edit each one on the campaign page (Personal emails).'}
+
     def tool_preview_ai_writing(self, campaign_id, count=2):
         db, settings = self.db, self.db.settings()
         campaign = service.get_campaign(db, campaign_id)
@@ -592,13 +803,206 @@ class Toolbox:
         if not db.one('SELECT id FROM lists WHERE id = ?', list_id):
             raise service.Problem(f'List {list_id} does not exist')
         limit = max(1, min(int(limit or 25), 50))
+        offset = max(0, int(offset or 0))
         rows = db.q('SELECT c.* FROM list_members m JOIN contacts c ON c.id = m.contact_id WHERE m.list_id = ? '
-                    'ORDER BY m.added_at, c.id LIMIT ? OFFSET ?', list_id, limit, max(0, int(offset or 0)))
+                    'ORDER BY m.added_at, c.id LIMIT ? OFFSET ?', list_id, limit, offset)
         total = contacts.list_counts(db, list_id)['total']
+        waiting = prospects.counts(db, list_id)
         return {'list_id': list_id, 'total': total, 'showing': f'{offset + 1}-{offset + len(rows)}' if rows else '0',
+                'leads_needing_email': waiting.get('needs_email', 0) + waiting.get('guessed', 0),
                 'leads': [{'email': r['email'], 'first_name': r['first_name'], 'last_name': r['last_name'],
                            'stage': r['lead_status'], 'subscribed': r['status'] == 'active',
-                           **{k: str(v)[:200] for k, v in loads(r['fields']).items()}} for r in rows]}
+                           'research': r['research'][-600:] or None,
+                           **{k: str(v)[:300] for k, v in loads(r['fields']).items()}} for r in rows]}
+
+    def tool_search_leads(self, query='', stage=None, list_id=None, limit=25):
+        db = self.db
+        where, args, join = ['1 = 1'], [], ''
+        if list_id:
+            join = 'JOIN list_members m ON m.contact_id = c.id AND m.list_id = ?'
+            args.append(int(list_id))
+        query = ' '.join(str(query or '').split())
+        if query:
+            like = f'%{query}%'
+            where.append('(c.email LIKE ? OR c.first_name LIKE ? OR c.last_name LIKE ? OR c.fields LIKE ? '
+                         'OR c.research LIKE ? OR c.notes LIKE ?)')
+            args += [like] * 6
+        if stage:
+            where.append('c.lead_status = ?')
+            args.append(stage)
+        limit = max(1, min(int(limit or 25), 50))
+        rows = db.q(f'SELECT c.* FROM contacts c {join} WHERE {" AND ".join(where)} ORDER BY c.updated_at DESC '
+                    'LIMIT ?', *args, limit)
+        return {'found': len(rows), 'leads': [_lead_brief(r) for r in rows]}
+
+    def tool_get_lead(self, email):
+        db = self.db
+        contact = self._contact_by_email(email)
+        exchanged = []
+        for item in replies.thread_for(db, contact['id'], contact['email'])[-30:]:
+            row = item['row']
+            if item['kind'] == 'out':
+                exchanged.append({'we_sent': row['subject'], 'when': _local(db, row['sent_at'] or row['created_at']),
+                                  'status': row['status'], 'opened': bool(row['opened_at']),
+                                  'clicked': bool(row['clicked_at'])})
+            else:
+                exchanged.append({'they_replied': row['subject'], 'when': _local(db, row['received_at']),
+                                  'category': row['category'], 'summary': row['summary'], 'text': row['body'][:800]})
+        return {
+            'email': contact['email'], 'first_name': contact['first_name'], 'last_name': contact['last_name'],
+            'stage': contact['lead_status'], 'subscribed': contact['status'] == 'active',
+            'address_check': contact['verify_status'] or 'not checked',
+            'columns': {k: str(v)[:2000] for k, v in loads(contact['fields']).items()},
+            'owner_notes': contact['notes'] or None, 'research': contact['research'] or None,
+            'lists': [dict(r) for r in db.q('SELECT l.id AS list_id, l.name FROM list_members m JOIN lists l '
+                                            'ON l.id = m.list_id WHERE m.contact_id = ?', contact['id'])],
+            'emails': exchanged or 'nothing sent or received yet',
+            'open_tasks': [{'title': t['title'], 'due_local': _local(db, t['due_at'])} for t in db.q(
+                'SELECT * FROM tasks WHERE contact_id = ? AND done_at IS NULL ORDER BY due_at', contact['id'])],
+        }
+
+    def tool_research_lead(self, email=None, prospect_id=None, website=None):
+        db = self.db
+        fields, label, contact = {}, '', None
+        if email:
+            contact = self._contact_by_email(email)
+            fields = loads(contact['fields'])
+            site = leadtools.website_for(contact)
+            label = contact['email']
+        elif prospect_id:
+            row = db.one('SELECT * FROM prospects WHERE id = ?', prospect_id)
+            if row is None:
+                raise service.Problem(f'No lead {prospect_id} without an email')
+            fields, site, label = loads(row['fields']), row['website'], prospects.label(row)
+        else:
+            site = leadtools.domain_from(website or '')
+            label = site
+        site = site or leadtools.domain_from(website or '')
+        company = _company(fields) or (news.company_of(contact) if contact else '') or (site.split('.')[0] if site else '')
+        if not site and not company:
+            raise service.Problem('Nothing to research: no website or company name for this lead.')
+
+        def facts():
+            try:
+                return leadtools.fetch_site(db, site) if site else None
+            except leadtools.ToolError as exc:
+                return {'error': str(exc)}
+            finally:
+                db.close()
+
+        def published():
+            try:
+                return leadtools.site_emails(db, site)['emails'] if site else []
+            except leadtools.ToolError:
+                return []
+            finally:
+                db.close()
+
+        def headlines():
+            try:
+                return news.search(db, company) if company else []
+            except news.NewsError:
+                return []
+            finally:
+                db.close()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            jobs = [pool.submit(facts), pool.submit(published), pool.submit(headlines)]
+            site_facts, emails, items = (job.result() for job in jobs)
+        out = {'lead': label, 'company': company or None, 'website': site or None,
+               'site': ({'title': site_facts.get('title'), 'description': site_facts.get('description'),
+                         'headings': site_facts.get('headings'), 'text': (site_facts.get('text') or '')[:2500]}
+                        if site_facts and not site_facts.get('error') else (site_facts or {}).get('error')),
+               'emails_on_their_site': [{'email': e['email'], 'page': e['page']} for e in emails] or None,
+               'recent_news': [{'title': i['title'], 'source': i['source'],
+                                'date': time.strftime('%Y-%m-%d', time.gmtime(i['date'])) if i['date'] else None,
+                                'url': i['url']} for i in items[:6]] or None}
+        if contact is not None and contact['research']:
+            out['already_saved_notes'] = contact['research'][-1500:]
+        return out
+
+    def tool_save_lead_notes(self, email, notes, replace=False):
+        contact = self._contact_by_email(email)
+        text = str(notes or '').strip()[:3000]
+        if not text:
+            raise service.Problem('Write the notes to save.')
+        stamp = time.strftime('%Y-%m-%d')
+        combined = text if replace else f'{contact["research"]}\n\n[{stamp}] {text}'.strip()
+        combined = combined[-6000:]
+        self.db.run('UPDATE contacts SET research = ?, updated_at = ? WHERE id = ?', combined, now(), contact['id'])
+        return {'lead': contact['email'], 'saved': True, 'notes_length': len(combined)}
+
+    def tool_update_lead(self, email, first_name=None, last_name=None, fields=None):
+        contact = self._contact_by_email(email)
+        merged = loads(contact['fields'])
+        for key, value in (fields or {}).items():
+            slug = re.sub(r'[^a-z0-9]+', '_', str(key).lower()).strip('_')[:40]
+            if not slug or slug in ('email', 'first_name', 'last_name'):
+                continue
+            if value in (None, ''):
+                merged.pop(slug, None)
+            else:
+                merged[slug] = str(value)[:1000]
+        if len(merged) > 60:
+            raise service.Problem('A lead can have at most 60 columns.')
+        self.db.run('UPDATE contacts SET first_name = ?, last_name = ?, fields = ?, updated_at = ? WHERE id = ?',
+                    contact['first_name'] if first_name is None else str(first_name).strip()[:100],
+                    contact['last_name'] if last_name is None else str(last_name).strip()[:100],
+                    json.dumps(merged, ensure_ascii=False), now(), contact['id'])
+        return {'lead': contact['email'], 'updated': True}
+
+    def tool_list_prospects(self, list_id):
+        if not self.db.one('SELECT id FROM lists WHERE id = ?', list_id):
+            raise service.Problem(f'List {list_id} does not exist')
+        rows = prospects.waiting(self.db, list_id)
+        return {'list_id': list_id, 'waiting': len(rows), 'leads': [prospects.as_dict(r) for r in rows[:60]]}
+
+    def tool_find_missing_emails(self, list_id, prospect_ids=None):
+        if not self.db.one('SELECT id FROM lists WHERE id = ?', list_id):
+            raise service.Problem(f'List {list_id} does not exist')
+        result = prospects.find_emails(self.db, self.db.settings(), list_id=list_id, ids=prospect_ids or None)
+        if not result['checked']:
+            return {'checked': 0, 'note': 'No leads in this list are waiting for an email search.'}
+        result['note'] = ('Added leads are on the list now. Guessed addresses are not: ask the owner before '
+                          'adding any with set_prospect_email.')
+        return result
+
+    def tool_set_prospect_email(self, prospect_id, email):
+        contact_id = prospects.set_email(self.db, prospect_id, email)
+        return {'prospect_id': prospect_id, 'email': contacts.normalize_email(email), 'added_to_list': True,
+                'contact_id': contact_id}
+
+    def tool_create_list(self, name, description=''):
+        name = ' '.join(str(name or '').split())[:120]
+        if not name:
+            raise service.Problem('Give the list a name.')
+        list_id = self.db.run('INSERT INTO lists (name, description, created_at) VALUES (?, ?, ?)',
+                              name, str(description or '')[:500], now()).lastrowid
+        return {'list_id': list_id, 'name': name}
+
+    def tool_add_leads(self, list_id, leads):
+        db = self.db
+        if not db.one('SELECT id FROM lists WHERE id = ?', list_id):
+            raise service.Problem(f'List {list_id} does not exist')
+        if not isinstance(leads, list) or not leads:
+            raise service.Problem('Give at least one lead.')
+        rows, no_mail = [], []
+        for lead in leads[:300]:
+            if not isinstance(lead, dict):
+                continue
+            address = contacts.normalize_email(lead.get('email'))
+            if address and leadtools.check_domain(db, address)['mail'] is False:
+                no_mail.append(address)
+                address = None
+            extra = {re.sub(r'[^a-z0-9]+', '_', str(k).lower()).strip('_')[:40]: str(v)[:1000]
+                     for k, v in lead.items() if k not in ('email', 'first_name', 'last_name') and v not in (None, '')}
+            rows.append({'email': address or '', 'first_name': str(lead.get('first_name') or '')[:100],
+                         'last_name': str(lead.get('last_name') or '')[:100], 'fields': extra})
+        summary = prospects.import_upload(db, list_id, rows)
+        return {'list_id': list_id, 'added': summary['added'] + summary['existing'],
+                'already_in_list': summary['already_in_list'], 'need_an_email': summary['needs_email'],
+                'skipped_do_not_email': summary['suppressed'], 'skipped_invalid': summary['invalid'],
+                'domains_that_receive_no_mail': no_mail or None}
 
     def tool_lead_news(self, company=None, email=None):
         if email:
@@ -617,12 +1021,32 @@ class Toolbox:
              'date': time.strftime('%Y-%m-%d', time.gmtime(i['date'])) if i['date'] else None, 'url': i['url']}
             for i in items] or 'No recent news found.'}
 
+    # -- offers --------------------------------------------------------------
+    def tool_get_offers(self):
+        rows = offers.everything(self.db)
+        if not rows:
+            return {'offers': [], 'note': 'No offer saved yet.'}
+        return {'offers': [dict(offers.as_dict(r), still_empty=offers.completeness(r) or None) for r in rows]}
+
+    def tool_save_offer(self, offer_id=None, make_default=None, **fields):
+        offer_id = offers.save(self.db, fields, offer_id=offer_id, make_default=make_default)
+        row = offers.get(self.db, offer_id)
+        return {'saved': True, **offers.as_dict(row), 'still_empty': offers.completeness(row) or None}
+
+    # -- the web ---------------------------------------------------------------
+    def tool_web_search(self, query):
+        if self.search is None:
+            raise service.Problem('Web search is off. It can be turned on in Settings → AI.')
+        result = self.search(query)
+        self.db.track_ai('agent', result.pop('usage', None))
+        return result
+
 
 # -- conversation storage -------------------------------------------------------
-def new_thread(db):
+def new_thread(db, kind='outreach'):
     ts = now()
-    return db.run('INSERT INTO agent_threads (title, created_at, updated_at) VALUES (?, ?, ?)',
-                  'New conversation', ts, ts).lastrowid
+    return db.run('INSERT INTO agent_threads (title, kind, created_at, updated_at) VALUES (?, ?, ?, ?)',
+                  'New conversation', kind if kind in PERSONAS else 'outreach', ts, ts).lastrowid
 
 
 def history(db, thread_id):
@@ -652,35 +1076,78 @@ def configured(settings):
     return ai.configured(settings)
 
 
-def reply(db, cfg, thread_id, user_text, complete=None):
-    """Adds the user's message, runs the agent and returns the new messages.
+def add_user_message(db, thread_id, text, shown=None, attachment=None):
+    """Stores what the owner sent. `text` is what the model reads; `shown` what the chat shows."""
+    messages = history(db, thread_id)
+    if len(messages) >= MAX_THREAD_MESSAGES:
+        raise service.Problem('This conversation has become very long. Start a new one to continue.')
+    _repair(db, thread_id, messages)
+    content = {'text': text}
+    if shown is not None:
+        content['shown'] = shown
+    if attachment:
+        content['attachment'] = attachment
+    saved = _save(db, thread_id, 'user', content)
+    if not any(m['role'] == 'user' for m in messages):
+        visible = shown if shown is not None else text
+        title = ' '.join(visible.split())[:60] or (f'Leads: {attachment["name"]}' if attachment else 'New conversation')
+        db.run('UPDATE agent_threads SET title = ? WHERE id = ?', title, thread_id)
+    return saved
 
-    `complete` can replace the provider call (used by tests).
-    """
+
+def _with_retries(call):
+    for attempt in range(len(RETRY_DELAYS) + 1):
+        try:
+            return call()
+        except ProviderError as exc:
+            if not exc.retry or attempt == len(RETRY_DELAYS):
+                raise
+            log.warning('AI call failed (%s); trying again in %ss', exc, RETRY_DELAYS[attempt])
+            time.sleep(RETRY_DELAYS[attempt])
+
+
+def run(db, cfg, thread_id, complete=None, on_step=None, should_stop=None):
+    """Runs the agent on the conversation until it answers. Returns the new messages.
+
+    `complete` can replace the provider call (tests). on_step(text) hears what it is doing;
+    should_stop() is asked between steps."""
+    thread = db.one('SELECT kind FROM agent_threads WHERE id = ?', thread_id)
+    persona = PERSONAS.get(thread['kind'] if thread else 'outreach', PERSONAS['outreach'])
+    system, tools = persona['system'], list(persona['tools'])
     settings = db.settings()
     provider_name = settings.get('ai_provider') or ai_openrouter.NAME
+    search = None
     if complete is None:
         try:
             provider, api_key, model = ai.resolve(db, settings, 'agent')
         except ai.NotConfigured as exc:
             raise service.Problem(str(exc))
-        web_search = settings.get('ai_web_search') == '1'
+        web = settings.get('ai_web_search') == '1'
+        native = web and getattr(provider, 'NATIVE_WEB_SEARCH', False)
+        if web and not native and hasattr(provider, 'search'):
+            tools.append(WEB_SEARCH_TOOL)
+
+            def search(query):
+                return provider.search(api_key, model, query)
 
         def complete(messages):
-            return provider.complete(api_key, model, SYSTEM, messages, TOOLS, web_search=web_search)
+            return provider.complete(api_key, model, system, messages, tools, web_search=native)
+
+    def step(text):
+        if on_step is not None:
+            on_step(text)
 
     messages = history(db, thread_id)
-    if len(messages) >= MAX_THREAD_MESSAGES:
-        raise service.Problem('This conversation has become very long. Start a new one to continue.')
     _repair(db, thread_id, messages)
     start = len(messages)
-    messages.append(_save(db, thread_id, 'user', {'text': user_text}))
-    if start == 0:
-        db.run('UPDATE agent_threads SET title = ? WHERE id = ?', ' '.join(user_text.split())[:60], thread_id)
-
-    toolbox = Toolbox(db, cfg)
+    toolbox = Toolbox(db, cfg, search=search)
     for _ in range(MAX_STEPS):
-        result = complete(messages)
+        if should_stop is not None and should_stop():
+            messages.append(_save(db, thread_id, 'assistant', {
+                'text': '', 'tool_calls': [], 'provider': provider_name, 'raw': None, 'note': 'Stopped.'}))
+            break
+        step('Thinking')
+        result = _with_retries(lambda: complete(messages))
         db.track_ai('agent', result.get('usage'))
         content = {'text': result.get('text', ''), 'tool_calls': result.get('tool_calls') or [],
                    'provider': provider_name, 'model': result.get('model', ''), 'raw': result.get('raw'),
@@ -692,6 +1159,7 @@ def reply(db, cfg, thread_id, user_text, complete=None):
             break
         results = []
         for call in content['tool_calls']:
+            step(ACTIVITY.get(call['name'], 'Working'))
             output, is_error = toolbox.run(call['name'], call['input'])
             results.append({'id': call['id'], 'name': call['name'], 'output': output, 'is_error': is_error})
         messages.append(_save(db, thread_id, 'tool', {'results': results}))
@@ -702,5 +1170,12 @@ def reply(db, cfg, thread_id, user_text, complete=None):
     return messages[start:]
 
 
-__all__ = ['PROVIDERS', 'ProviderError', 'TOOLS', 'SYSTEM', 'Toolbox', 'configured', 'history', 'new_thread',
-           'reply']
+def reply(db, cfg, thread_id, user_text, complete=None):
+    """Adds the owner's message and runs the agent in this thread. Returns the new messages, the
+    owner's message first. (The chat page runs turns in the background; see agent_runs.)"""
+    first = add_user_message(db, thread_id, user_text)
+    return [first] + run(db, cfg, thread_id, complete=complete)
+
+
+__all__ = ['ACTIVITY', 'OFFER_SYSTEM', 'OFFER_TOOLS', 'PERSONAS', 'PROVIDERS', 'ProviderError', 'SYSTEM', 'TOOLS',
+           'Toolbox', 'add_user_message', 'configured', 'history', 'new_thread', 'reply', 'run']

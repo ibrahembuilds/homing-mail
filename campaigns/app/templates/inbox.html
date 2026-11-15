@@ -3,9 +3,13 @@
 {% block title %}Inbox{% endblock %}
 {% block body %}
 <div class="head">
-  <div><div class="eyebrow">Replies from your leads</div><h1>Inbox</h1>
-    <div class="sub">Sorted by the AI as they arrive. Answering here keeps the conversation in one thread.
+  <div><h1>Inbox</h1>
+    <div class="sub">Replies from your leads, sorted by the AI. Pick a mailbox above them to see everything it receives.
       AI answers: <a href="{{ url_for('ui.settings') }}#replies">{{ {'draft': 'drafts for you', 'send': 'answers by itself'}.get(reply_mode, 'off') }}</a></div></div>
+  <div class="actions"><a class="btn primary" href="{{ url_for('ui.compose') }}"><svg aria-hidden="true"><use href="#i-send"/></svg>Write an email</a></div>
+</div>
+{{ ui.inbox_profiles(profiles, 'replies') }}
+<div class="mail-bar">
   <div class="segmented" role="tablist">
     {% for key, label in views %}
     <a class="{{ 'on' if view == key }}" href="?view={{ key }}">{{ label }}{% if counts.get(key) %}<span class="n">{{ counts[key] }}</span>{% endif %}</a>

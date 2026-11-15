@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}{{ profile.email }} · Inbox{% endblock %}
+{% block body %}
+<div class="head">
+  <div><h1>Inbox</h1><div class="sub">Everything {{ profile.email }} receives, read live from the mailbox.</div></div>
+  <div class="actions"><a class="btn primary" href="{{ url_for('ui.compose', sender=profile.account_id or 'server') }}"><svg aria-hidden="true"><use href="#i-send"/></svg>Write an email</a></div>
+</div>
+{{ ui.inbox_profiles(profiles, profile.key) }}
+
+<div class="mail-bar">
+  <nav class="segmented" aria-label="Folder">
+    {% for key, label, _, _ in folders %}<a class="{{ 'on' if folder == key }}" href="{{ url_for('ui.mailbox', key=profile.key, folder=key) }}">{{ label }}</a>{% endfor %}
+  </nav>
+  <form class="search" method="get"><input type="hidden" name="folder" value="{{ folder }}">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search this folder" aria-label="Search this folder"></form>
+</div>
+
+{% if error %}
+<div class="notice bad">{{ error }}{% if 'sign in' in error %} Check the password under <a href="{{ url_for('ui.accounts') if profile.account_id else url_for('ui.settings') ~ '#replies' }}">{{ 'Email accounts' if profile.account_id else 'Settings → Replies' }}</a>.{% endif %}</div>
+{% endif %}
+
+<section class="card flush">
+  {% if listing.messages %}
+  <ul class="mail-list">
+    {% for m in listing.messages %}
+    <li class="{{ 'unread' if m.unread }}">
+      <a href="{{ url_for('ui.mailbox_message', key=profile.key, folder=folder, uid=m.uid) }}">
+        <span class="from">{{ m.to if folder == 'sent' else m.from_name }}</span>
+        <span class="subject">{{ m.subject }}</span>
+        <span class="when">{{ m.date|ago if m.date else '' }}</span>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+  <div class="pager"><span><span class="num">{{ listing.total|num }}</span> in {{ folder }}{% if listing.total > listing.messages|length %} · newest {{ listing.messages|length }} shown{% endif %}</span></div>
+  {% elif not error %}
+  {{ ui.empty('Nothing here' if not q else 'No messages match "' ~ q ~ '"',
+      'Mail sent to ' ~ profile.email ~ ' shows up here as it arrives.' if folder == 'inbox' and not q else '') }}
+  {% endif %}
+</section>
+{% endblock %}
