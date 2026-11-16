@@ -45,6 +45,63 @@ def merge(template, values, escape=False):
     return TAG_RE.sub(replace, template or '')
 
 
+URL_IN_TEXT_RE = re.compile(r'(https?://[^\s<>"\']+[^\s<>"\'.,;:!?)\]])')
+
+
+def text_to_html(text):
+    """Plain text as a simple email body: paragraphs, line breaks and clickable links."""
+    escaped = html_lib.escape(str(text or '').replace('\r\n', '\n').strip(), quote=False)
+    linked = URL_IN_TEXT_RE.sub(lambda m: f'<a href="{m.group(1)}">{m.group(1)}</a>', escaped)
+    return ''.join('<p>' + part.replace('\n', '<br>') + '</p>' for part in re.split(r'\n{2,}', linked) if part.strip())
+
+
+EMAIL_FONT = 'Arial,Helvetica,sans-serif'
+FOOTER_MARK = '<!--footer-->'
+
+
+def signature_html(settings):
+    signature = (settings.get('email_signature') or '').strip()
+    if not signature:
+        return ''
+    lines = html_lib.escape(signature).split('\n')
+    first, rest = lines[0], lines[1:]
+    return (f'<p style="margin:26px 0 0;line-height:1.5;color:#333"><strong>{first}</strong>'
+            + ''.join(f'<br><span style="color:#666">{line}</span>' for line in rest) + '</p>')
+
+
+def wrap_email(body_html, settings, sender_name='', color='#5b3be8', look=None):
+    """A body fragment as a whole email in the account's look: "branded" (a white card with a
+    header, the signature and a quiet footer) or "plain" (like a personal email)."""
+    look = look or settings.get('email_style') or 'branded'
+    head = ('<!doctype html><html><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1"></head>')
+    body_html = body_html + signature_html(settings)
+    if look != 'branded':
+        return (head + f'<body style="margin:0;padding:16px;font-family:{EMAIL_FONT};font-size:15px;'
+                f'line-height:1.6;color:#222">{body_html}{FOOTER_MARK}</body></html>')
+    color = color if re.fullmatch(r'#[0-9a-fA-F]{3,8}', color or '') else '#5b3be8'
+    logo = (settings.get('email_logo_url') or '').strip()
+    name = html_lib.escape(sender_name or '')
+    if logo.startswith('https://'):
+        brand = f'<img src="{html_lib.escape(logo)}" alt="{name}" height="32" style="display:block;height:32px;border:0">'
+    else:
+        brand = f'<span style="font-size:17px;font-weight:bold;color:#1a1830">{name or "&nbsp;"}</span>'
+    return (head + f'<body style="margin:0;padding:0;background:#f3f3f7;font-family:{EMAIL_FONT}">'
+            '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+            'style="background:#f3f3f7"><tr><td align="center" style="padding:28px 12px">'
+            '<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" '
+            'style="width:100%;max-width:600px;background:#ffffff;border:1px solid #e6e6ee;border-radius:10px">'
+            f'<tr><td style="padding:20px 32px 16px;border-bottom:3px solid {color};border-radius:10px 10px 0 0">{brand}</td></tr>'
+            f'<tr><td style="padding:28px 32px 32px;font-size:15px;line-height:1.65;color:#222">{body_html}</td></tr>'
+            f'</table>{FOOTER_MARK}</td></tr></table></body></html>')
+
+
+def insert_footer(html, footer):
+    if FOOTER_MARK in html:
+        return html.replace(FOOTER_MARK, footer, 1)
+    return _insert_before_body_end(html, footer)
+
+
 def html_to_text(html):
     text = re.sub(r'(?is)<(script|style|head)\b.*?</\1>', '', html or '')
     text = re.sub(r'(?is)<a\b[^>]*?href\s*=\s*["\'](.*?)["\'][^>]*>(.*?)</a>',
@@ -142,28 +199,35 @@ class Renderer:
 
         source_html = source['html'] or ''
         if not source_html.strip() and source['text']:
-            source_html = '<p>' + html_lib.escape(source['text']).replace('\n\n', '</p><p>').replace('\n', '<br>') + '</p>'
+            source_html = text_to_html(source['text'])
         html = safe_links(merge(source_html, values, escape=True))
+        look = (content or {}).get('look') if isinstance(content, dict) else None
         if '<html' not in html.lower():
-            html = ('<!doctype html><html><head><meta charset="utf-8">'
-                    '<meta name="viewport" content="width=device-width, initial-scale=1"></head>'
-                    f'<body style="margin:0;padding:16px;font-family:Arial,Helvetica,sans-serif;font-size:15px;'
-                    f'line-height:1.5;color:#222">{html}</body></html>')
+            html = wrap_email(html, settings, campaign['from_name'] or settings.get('from_name', ''),
+                              self.cfg.BRAND_COLOR, look=look)
         if source['preheader']:
             pre = ('<div style="display:none;max-height:0;overflow:hidden;opacity:0">'
                    f'{html_lib.escape(merge(source["preheader"], values))}</div>')
             html = _insert_after_body_start(html, pre)
         address = (settings.get('postal_address') or '').strip()
         if not UNSUB_TAG_RE.search(source_html):
-            footer = ('<div style="margin-top:32px;padding-top:12px;border-top:1px solid #ddd;'
-                      'font-size:12px;line-height:1.5;color:#777">'
+            centered = FOOTER_MARK in html and 'background:#f3f3f7' in html
+            footer = (f'<div style="margin-top:{18 if centered else 32}px;padding-top:12px;'
+                      + ('' if centered else 'border-top:1px solid #ddd;')
+                      + f'font-family:{EMAIL_FONT};font-size:12px;line-height:1.5;color:#888;'
+                      + ('text-align:center;max-width:600px' if centered else '') + '">'
                       'Prefer not to get these emails? '
-                      f'<a href="{html_lib.escape(unsub)}" style="color:#777">Unsubscribe</a>'
+                      f'<a href="{html_lib.escape(unsub)}" style="color:#888">Unsubscribe</a>'
                       + (f'<br>{html_lib.escape(address)}' if address else '') + '</div>')
-            html = _insert_before_body_end(html, footer)
+            html = insert_footer(html, footer)
+        else:
+            html = html.replace(FOOTER_MARK, '')
 
         text_source = source['text'] or html_to_text(source_html)
         text = merge(text_source, values)
+        signature = (settings.get('email_signature') or '').strip()
+        if signature and '<html' not in source_html.lower():
+            text += '\n\n' + signature
         if not UNSUB_TAG_RE.search(text_source):
             text += f'\n\n--\nUnsubscribe: {unsub}' + (f'\n{address}' if address else '')
 
@@ -207,7 +271,12 @@ class Renderer:
         if html and text is None:
             text = html_to_text(html)
         if html and '<html' not in html.lower():
-            html = f'<!doctype html><html><head><meta charset="utf-8"></head><body>{html}</body></html>'
+            # Answers in a thread and API mail stay plain; the rest gets the account's look.
+            look = 'plain' if row['kind'] in ('reply', 'api') else None
+            html = wrap_email(html, settings, payload.get('from_name', ''), self.cfg.BRAND_COLOR, look=look)
+            if look != 'plain' and (settings.get('email_signature') or '').strip():
+                text = (text or '') + '\n\n' + settings['email_signature'].strip()
+        html = html.replace(FOOTER_MARK, '')
         if html and payload.get('track', True):
             if settings.get('track_clicks') == '1':
                 html = self.track_links(html, mid, 0)

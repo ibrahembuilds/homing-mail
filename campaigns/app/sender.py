@@ -214,7 +214,11 @@ def message_content(db, campaign, row):
         mine = db.one("SELECT * FROM personalizations WHERE campaign_id = ? AND contact_id = ? "
                       "AND status IN ('done', 'edited')", campaign['id'], row['contact_id'])
         if mine is not None:
-            if campaign['ai_mode'] == 'line':
+            if campaign['ai_mode'] == 'own':
+                if row['step'] == 0:
+                    from . import perlead
+                    out['content'] = perlead.content_for(campaign, mine)
+            elif campaign['ai_mode'] == 'line':
                 out['ai_line'] = mine['body']
             elif row['step'] == 0:
                 out['content'] = {'subject': mine['subject'], 'html': mine['body'], 'text': '',
@@ -231,7 +235,9 @@ def message_content(db, campaign, row):
             out['parent_id'] = row['parent_id']
         else:
             subject = step['subject'] or campaign['subject']
-        out['content'] = {'subject': subject, 'html': step['html'], 'text': '', 'preheader': ''}
+        # A follow-up in the same thread reads like a quick reply, so it keeps the plain look.
+        out['content'] = {'subject': subject, 'html': step['html'], 'text': '', 'preheader': '',
+                          'look': 'plain' if step['as_reply'] else None}
     return out
 
 
@@ -281,7 +287,7 @@ def follow_up_candidates(db, campaign_id, step, due_before=None, limit=2000, uno
 def ab_active(campaign):
     """True when the campaign tests a second subject line. In "full" AI mode
     the AI writes each subject, so there is nothing to test."""
-    return bool((campaign['subject_b'] or '').strip()) and campaign['ai_mode'] != 'full'
+    return bool((campaign['subject_b'] or '').strip()) and campaign['ai_mode'] not in ('full', 'own')
 
 
 def assign_variants(db, campaign):
@@ -342,8 +348,10 @@ def _insert_members(db, campaign, ts):
         "lower(substr(c.email, instr(c.email, '@') + 1)), ?, ?, 'queued', ? "
         "FROM list_members m JOIN contacts c ON c.id = m.contact_id "
         f"WHERE m.list_id = ? AND c.status = 'active' AND c.verify_status NOT IN ({', '.join('?' for _ in skipped)}) "
-        "AND c.email NOT IN (SELECT email FROM suppressions) ORDER BY m.added_at, c.id",
-        campaign['id'], campaign['from_email'], campaign['subject'], ts, campaign['list_id'], *skipped).rowcount
+        "AND c.email NOT IN (SELECT email FROM suppressions) "
+        "AND c.id NOT IN (SELECT contact_id FROM campaign_skips WHERE campaign_id = ?) ORDER BY m.added_at, c.id",
+        campaign['id'], campaign['from_email'], campaign['subject'], ts, campaign['list_id'], *skipped,
+        campaign['id']).rowcount
 
 
 def add_late_members(db, campaign):
@@ -611,7 +619,7 @@ class Engine:
     def _next_message(self, campaign, domain_cap):
         db = self.db
         ts = now()
-        ready = f' AND {self.AI_READY}' if campaign['ai_mode'] else ''
+        ready = f' AND {self.AI_READY}' if campaign['ai_mode'] in writer.AI_MODES else ''
         if ab_active(campaign) and not campaign['ab_winner']:
             ready += " AND m.variant != 'rest'"
         if domain_cap:
@@ -630,7 +638,7 @@ class Engine:
                      campaign['id'], now(), default=0)
         if not due:
             return ''
-        if campaign['ai_mode']:
+        if campaign['ai_mode'] in writer.AI_MODES:
             blocked = db.val(f"SELECT COUNT(*) FROM messages m WHERE m.campaign_id = ? AND m.status = 'queued' "
                              f"AND NOT {self.AI_READY}", campaign['id'], default=0)
             if blocked:

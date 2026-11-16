@@ -29,56 +29,49 @@
 </div>
 {{ ui.analytics_tabs() }}
 
-{{ ui.stat_tiles(totals) }}
+{{ ui.key_numbers(totals) }}
 
 <div class="card">
-  <div class="card-head"><h2>From first email to meeting</h2><span class="hint">Leads who got a first campaign email in this period</span></div>
+  <div class="card-head"><h2>From first email to meeting</h2></div>
   {% if funnel[0].count %}{{ ui.funnel(funnel) }}
-  <p class="hint" style="margin:12px 0 0">Interested and meetings come from how the AI sorted replies and from the status you give leads. Moving a lead to “Meeting booked” or “Won” counts here.</p>
-  {% else %}<div class="empty"><strong>No campaign emails in this period</strong></div>{% endif %}
+  {% else %}<p class="muted" style="margin:0">No campaign emails in this period.</p>{% endif %}
 </div>
 
-<div class="card"><h2>Per day</h2>
-  {% if totals.sent %}{{ ui.chart(series) }}{% else %}<div class="empty"><strong>Nothing sent in this period</strong></div>{% endif %}
-</div>
+{% if totals.sent %}<div class="card"><h2>Per day</h2>{{ ui.chart(series) }}</div>{% endif %}
 
 <div class="card flush"><h2>Campaigns</h2>
-  {% if campaigns %}{{ result_table(campaigns, 'Campaign', ('ui.campaign', 'campaign_id')) }}{% else %}<div class="empty">No campaign was sent in this period.</div>{% endif %}
+  {% if campaigns %}{{ result_table(campaigns, 'Campaign', ('ui.campaign', 'campaign_id')) }}{% else %}<p class="muted pad-x">No campaign was sent in this period.</p>{% endif %}
 </div>
 
-<div class="grid two">
-  <div class="card flush"><h2>Contact lists</h2>
-    {% if lists %}<div class="table-wrap"><table><tr><th>List</th><th class="num">Sent</th><th class="num">Open</th><th class="num">Click</th><th class="num">Bounce</th></tr>
-    {% for r in lists %}<tr><td><a href="{{ url_for('ui.list_detail', list_id=r.key) }}">{{ r.label }}</a></td><td class="num">{{ r.sent|num }}</td><td class="num">{{ r.open_rate|pct }}</td><td class="num">{{ r.click_rate|pct }}</td><td class="num">{{ r.bounce_rate|pct }}</td></tr>{% endfor %}
-    </table></div>{% else %}<div class="empty">No data yet.</div>{% endif %}
+<details class="card more-card">
+  <summary>More detail <span class="hint">lists, mailbox providers, links, and how to read these numbers</span></summary>
+  <div class="grid two" style="margin-top:14px">
+    <div><h3>Lists</h3>
+      {% if lists %}<div class="table-wrap"><table><tr><th>List</th><th class="num">Sent</th><th class="num">Open</th><th class="num">Bounce</th></tr>
+      {% for r in lists %}<tr><td><a href="{{ url_for('ui.list_detail', list_id=r.key) }}">{{ r.label }}</a></td><td class="num">{{ r.sent|num }}</td><td class="num">{{ r.open_rate|pct }}</td><td class="num">{{ r.bounce_rate|pct }}</td></tr>{% endfor %}
+      </table></div>{% else %}<p class="muted">No data yet.</p>{% endif %}
+    </div>
+    <div><h3>Mailbox providers <span class="hint">the 8 you send to most</span></h3>
+      {% if domains %}<div class="table-wrap"><table><tr><th>Domain</th><th class="num">Sent</th><th class="num">Open</th><th class="num">Bounce</th></tr>
+      {% for r in (domains|sort(attribute='sent', reverse=true))[:8] %}<tr><td>{{ r.label }}</td><td class="num">{{ r.sent|num }}</td><td class="num">{{ r.open_rate|pct }}</td><td class="num">{{ r.bounce_rate|pct }}</td></tr>{% endfor %}
+      </table></div>{% else %}<p class="muted">No data yet.</p>{% endif %}
+    </div>
   </div>
-  <div class="card flush"><h2>Mailbox providers</h2>
-    {% if domains %}<div class="table-wrap"><table><tr><th>Domain</th><th class="num">Sent</th><th class="num">Open</th><th class="num">Bounce</th><th class="num">Spam</th></tr>
-    {% for r in domains %}<tr><td>{{ r.label }}</td><td class="num">{{ r.sent|num }}</td><td class="num">{{ r.open_rate|pct }}</td><td class="num">{{ r.bounce_rate|pct }}</td><td class="num">{{ r.complaint_rate|pct }}</td></tr>{% endfor %}
-    </table></div>{% else %}<div class="empty">No data yet.</div>{% endif %}
-  </div>
-</div>
-
-{% if accounts|length > 1 or (accounts and accounts[0].key) %}
-<div class="card flush"><h2>Email accounts</h2>
-  {{ result_table(accounts, 'Sent from') }}
-</div>
-{% endif %}
-
-<div class="card flush"><h2>Most clicked links</h2>
-  {% if links %}<div class="table-wrap"><table><tr><th>Link</th><th class="num">People</th><th class="num">Clicks</th></tr>
+  {% if accounts|length > 1 or (accounts and accounts[0].key) %}
+  <h3>Email accounts</h3>{{ result_table(accounts, 'Sent from') }}
+  {% endif %}
+  {% if links %}
+  <h3>Most clicked links</h3>
+  <div class="table-wrap"><table><tr><th>Link</th><th class="num">People</th><th class="num">Clicks</th></tr>
   {% for l in links %}<tr><td class="small" style="word-break:break-all">{{ l.url|truncate(110) }}</td><td class="num">{{ l.people|num }}</td><td class="num">{{ l.clicks|num }}</td></tr>{% endfor %}
-  </table></div>{% else %}<div class="empty">No clicks in this period.</div>{% endif %}
-</div>
-
-<div class="card">
-  <h2>How to read these numbers</h2>
-  <ul style="margin:0;padding-left:18px" class="small">
-    <li><strong>Open rate</strong> is an upper estimate. Apple Mail and some security tools load images automatically, which counts as an open nobody made. "Confirmed human" excludes those and is a lower estimate. Use clicks to compare campaigns.</li>
-    <li><strong>Bounce rate</strong> should stay under 2%. A higher rate means the list has old or mistyped addresses; campaigns pause themselves above 8%.</li>
-    <li><strong>Spam complaints</strong> counts people who pressed "report spam" at providers that tell senders (Yahoo, Outlook and others once you enrol in their feedback loops). Gmail never reports individual complaints: watch your Gmail rate in Google Postmaster Tools and keep it under 0.1%.</li>
-    <li>No sender can see whether a message landed in the inbox or the junk folder. A falling open rate at one provider in the table above is the usual sign of junk-folder placement there.</li>
+  </table></div>
+  {% endif %}
+  <h3>How to read these numbers</h3>
+  <ul class="small reading">
+    <li><strong>Opened</strong> is an upper estimate: some mail apps load images by themselves. Replies and clicks are the reliable signals.</li>
+    <li><strong>Bounced</strong> should stay under 2%. Higher means old or wrong addresses; campaigns pause themselves above 8%.</li>
+    <li><strong>Marked as spam</strong> only counts providers that report it. Gmail never does: watch Google Postmaster Tools.</li>
     {% if not bounce_mailbox %}<li><strong>Bounces and complaints are not being collected yet.</strong> <a href="{{ url_for('ui.settings') }}#bounces">Connect the bounce mailbox</a>.</li>{% endif %}
   </ul>
-</div>
+</details>
 {% endblock %}

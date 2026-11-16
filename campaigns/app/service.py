@@ -13,7 +13,8 @@ EDITABLE = ('draft', 'pending_approval')
 CAMPAIGN_FIELDS = ('name', 'subject', 'preheader', 'from_name', 'from_email', 'reply_to', 'html', 'text',
                    'list_id', 'rate_per_hour', 'delay_min', 'delay_max', 'window_start', 'window_end',
                    'window_days', 'daily_cap', 'track_opens', 'track_clicks', 'ai_mode', 'ai_instructions',
-                   'ai_research', 'ai_news', 'mailbox_ids', 'subject_b', 'ab_percent', 'ab_wait_hours', 'skip_risky')
+                   'ai_research', 'ai_news', 'mailbox_ids', 'subject_b', 'ab_percent', 'ab_wait_hours', 'skip_risky',
+                   'offer_id')
 LEAD_STATUSES = (('new', 'New'), ('contacted', 'Contacted'), ('replied', 'Replied'), ('interested', 'Interested'),
                  ('meeting', 'Meeting booked'), ('won', 'Won'), ('not_interested', 'Not interested'),
                  ('lost', 'Lost'))
@@ -110,6 +111,8 @@ def clean_campaign(data, settings, existing=None):
         out['ai_instructions'] = str(data['ai_instructions']).strip()[:4000]
     if 'mailbox_ids' in data:
         out['mailbox_ids'] = mailboxes.format_ids(mailboxes.parse_ids(data['mailbox_ids']))
+    if 'offer_id' in data:
+        out['offer_id'] = _int(data['offer_id']) or None    # None: the default offer
     if existing is None and not out.get('name'):
         out['name'] = out.get('subject') or 'Untitled campaign'
     return out
@@ -131,6 +134,7 @@ def create_campaign(db, settings, data, created_by='user'):
     fields.update({k: v for k, v in cleaned.items() if v is not None or k in ('delay_min', 'delay_max', 'list_id')})
     if fields.get('list_id') and not db.one('SELECT id FROM lists WHERE id = ?', fields['list_id']):
         raise Problem(f'List {fields["list_id"]} does not exist')
+    _check_offer(db, fields.get('offer_id'))
     _check_accounts(db, fields.get('mailbox_ids'))
     ts = now()
     fields.update({'created_by': created_by, 'created_at': ts, 'updated_at': ts})
@@ -159,15 +163,19 @@ def update_campaign(db, settings, campaign_id, data):
         cleaned = {k: v for k, v in cleaned.items() if k in allowed}
     if cleaned.get('list_id') and not db.one('SELECT id FROM lists WHERE id = ?', cleaned['list_id']):
         raise Problem(f'List {cleaned["list_id"]} does not exist')
+    _check_offer(db, cleaned.get('offer_id'))
     _check_accounts(db, cleaned.get('mailbox_ids'))
     if not cleaned:
         return campaign
     content_changed = any(k in cleaned and cleaned[k] != campaign[k]
                           for k in ('subject', 'subject_b', 'html', 'text', 'from_email', 'mailbox_ids'))
     ai_changed = any(k in cleaned and cleaned[k] != campaign[k]
-                     for k in ('subject', 'html', 'ai_mode', 'ai_instructions', 'ai_research', 'ai_news'))
+                     for k in ('subject', 'html', 'ai_mode', 'ai_instructions', 'ai_research', 'ai_news', 'offer_id'))
     sets = ', '.join(f'{k} = ?' for k in cleaned)
     db.run(f'UPDATE campaigns SET {sets}, updated_at = ? WHERE id = ?', *cleaned.values(), now(), campaign_id)
+    if 'ai_mode' in cleaned and cleaned['ai_mode'] != campaign['ai_mode']:
+        # What was written for one mode (a line, a whole AI email, your own email) means nothing in another.
+        db.run('DELETE FROM personalizations WHERE campaign_id = ?', campaign_id)
     if ai_changed:
         writer.invalidate(db, campaign_id)   # what the AI wrote was based on the old draft
     if content_changed:
@@ -176,6 +184,11 @@ def update_campaign(db, settings, campaign_id, data):
             # What was put up for approval is no longer what would be sent.
             db.run("UPDATE campaigns SET status = 'draft', scheduled_at = NULL WHERE id = ?", campaign_id)
     return get_campaign(db, campaign_id)
+
+
+def _check_offer(db, offer_id):
+    if offer_id and not db.one('SELECT id FROM offers WHERE id = ?', offer_id):
+        raise Problem(f'Offer {offer_id} does not exist')
 
 
 def _check_accounts(db, value):
@@ -207,9 +220,19 @@ def sample_contact(db, campaign):
 def readiness(db, settings, campaign):
     """Reasons this campaign cannot be sent yet (empty list = ready)."""
     problems = []
-    if not campaign['subject'].strip():
-        problems.append('The subject is empty.')
-    if not campaign['html'].strip() and not campaign['text'].strip():
+    # With a different email for every lead, the main email is never sent and need not be filled in.
+    own_all, own_no_subject = False, 0
+    if campaign['ai_mode'] == 'own' and campaign['list_id']:
+        from . import perlead
+        counts = perlead.counts(db, campaign)
+        own_all = counts['total'] > 0 and counts['own'] >= counts['total']
+        own_no_subject = db.val("SELECT COUNT(*) FROM personalizations WHERE campaign_id = ? AND status = 'edited' "
+                                "AND subject = ''", campaign['id'], default=0)
+    if not campaign['subject'].strip() and (not own_all or own_no_subject):
+        problems.append('The subject is empty.' if not own_all else
+                        f'{own_no_subject} lead{"s have" if own_no_subject != 1 else " has"} no subject of their own, '
+                        'and the main subject is empty.')
+    if not campaign['html'].strip() and not campaign['text'].strip() and not own_all:
         problems.append('The message body is empty.')
     if campaign['mailbox_ids']:
         if not [a for a in mailboxes.for_campaign(db, campaign) if a['active']]:
@@ -238,9 +261,16 @@ def readiness(db, settings, campaign):
             problems.append(f'Follow-up {step["position"]} needs a subject (or send it in the same thread).')
         if PLACEHOLDER_RE.search(step['html'] or ''):
             problems.append(f'Follow-up {step["position"]} still has a [placeholder] to fill in.')
-    if PLACEHOLDER_RE.search(campaign['html'] or ''):
+    if PLACEHOLDER_RE.search(campaign['html'] or '') and not own_all:
         problems.append('The email still has a [placeholder] to fill in.')
-    for where, html in [('The email', campaign['html'])] + [
+    if campaign['ai_mode'] == 'own':
+        from . import perlead
+        leads, examples = perlead.placeholders(db, campaign['id'], BRACKETS_RE)
+        if leads:
+            problems.append(f'{leads} lead{"s" if leads != 1 else ""}\' own email{"s" if leads != 1 else ""} still '
+                            f'{"have" if leads != 1 else "has"} placeholders to fill in: {", ".join(examples)}. '
+                            'Use "Replace in every email" on the page with each lead\'s email.')
+    for where, html in ([] if own_all else [('The email', campaign['html'])]) + [
             (f'Follow-up {s["position"]}', s['html']) for s in steps]:
         found = STARTER_TEXT_RE.search(html or '')
         if found:
@@ -283,6 +313,10 @@ PLACEHOLDER_RE = re.compile(r'\[\s*(?:(?:your|insert|add|todo|tbd)\b[^\]\[]{0,12
                             r'|(?:company|first|last|full)?\s*name|company)\s*\]', re.IGNORECASE)
 
 
+# [Your name], [your calendar link], [insert date]: text left for the sender to fill in.
+BRACKETS_RE = re.compile(r'\[\s*(?:your|insert|add|todo|tbd|name|company|phone|link)\b[^\]\[\n]{0,60}\]', re.IGNORECASE)
+
+
 def check_campaign(db, cfg, settings, campaign):
     """Runs the content checks, stores and returns the report."""
     renderer = Renderer(cfg, db)
@@ -290,8 +324,19 @@ def check_campaign(db, cfg, settings, campaign):
     mid = '0' * 32
     from_email, from_name, _ = sender_of(db, settings, campaign)
     view = dict(campaign, from_email=from_email, from_name=from_name)
-    msg = renderer.campaign_message(view, contact, mid, settings, tracking=False)
-    findings = spamcheck.lint(campaign['subject'], campaign['html'], campaign['text'], from_email)
+    content = None
+    if campaign['ai_mode'] == 'own' and contact['id']:
+        own = db.one("SELECT * FROM personalizations WHERE campaign_id = ? AND contact_id = ? AND status = 'edited'",
+                     campaign['id'], contact['id'])
+        if own is not None:   # check what this lead really gets
+            from . import perlead
+            content = perlead.content_for(campaign, own)
+    msg = renderer.campaign_message(view, contact, mid, settings, tracking=False, content=content)
+    if content is not None:
+        from .render import text_to_html
+        findings = spamcheck.lint(content['subject'], text_to_html(content['text']), content['text'], from_email)
+    else:
+        findings = spamcheck.lint(campaign['subject'], campaign['html'], campaign['text'], from_email)
     if (campaign['subject_b'] or '').strip():
         seen = {f['title'] for f in findings}
         for finding in spamcheck.lint(campaign['subject_b'], campaign['html'], campaign['text'], from_email):
@@ -559,11 +604,17 @@ def send_test(db, cfg, settings, campaign_id, to_email):
     from_email, from_name, mailbox_id = sender_of(db, settings, campaign)
     if not contacts.normalize_email(from_email):
         raise Problem('No From address. Set one on the campaign or a default in Settings.')
-    if not campaign['html'].strip() and not campaign['text'].strip():
+    contact = sample_contact(db, campaign)
+    extra = {}
+    if campaign['ai_mode'] and contact['id']:
+        # The test shows what the first lead really gets: their own email, or the AI's version.
+        content = message_content(db, campaign, {'contact_id': contact['id'], 'step': 0, 'parent_id': None})
+        extra = {'content': content['content'], 'ai_line': content['ai_line']}
+    if not extra.get('content') and not campaign['html'].strip() and not campaign['text'].strip():
         raise Problem('The message body is empty.')
     mid = security.new_id()
-    subject, html, text = Renderer(cfg, db).campaign_bodies(campaign, sample_contact(db, campaign), mid,
-                                                           settings, tracking=False)
+    subject, html, text = Renderer(cfg, db).campaign_bodies(campaign, contact, mid, settings, tracking=False,
+                                                           **extra)
     reply_to = campaign['reply_to'] or settings.get('reply_to', '')
     if mailbox_id and reply_to == settings.get('reply_to'):
         reply_to = ''

@@ -82,6 +82,9 @@ DEFAULT_SETTINGS = {
     'from_email': '',
     'reply_to': '',
     'postal_address': '',
+    'email_style': 'branded',     # branded: header, card and footer | plain: like a personal email
+    'email_signature': '',        # lines under every email: name, role, company, phone, website
+    'email_logo_url': '',         # https:// image shown in the header of branded emails
     'timezone': 'UTC',
     # pacing defaults for new campaigns
     'rate_per_hour': '120',

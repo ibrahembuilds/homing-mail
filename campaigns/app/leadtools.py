@@ -48,7 +48,11 @@ DISPOSABLE = {
     'throwawaymail.com', 'fakeinbox.com', 'mintemail.com', 'mohmal.com', 'emailondeck.com', 'tempail.com',
     'moakt.com', 'spamgourmet.com', 'mailnesia.com', 'burnermail.io', 'tempr.email', 'discard.email',
 }
-WEBSITE_FIELDS = ('website', 'company_website', 'url', 'site', 'web', 'domain', 'company_domain', 'homepage')
+WEBSITE_FIELDS = ('website', 'company_website', 'current_website', 'website_url', 'business_website', 'url', 'site',
+                  'web', 'domain', 'company_domain', 'homepage')
+# Columns that hold some other page, never the company's own site.
+NOT_THEIR_SITE = ('preview', 'demo', 'mockup', 'linkedin', 'facebook', 'instagram', 'twitter', 'tiktok', 'youtube',
+                  'logo', 'image', 'photo', 'file', 'calendly')
 
 
 class ToolError(Exception):
@@ -571,14 +575,135 @@ def fetch_site(db, address):
     return data
 
 
-def website_for(contact):
-    """The company website of a lead: a website column, else the email domain
-    when it is a company domain."""
-    fields = loads(contact['fields'])
+def website_from_fields(fields):
+    """The company website among a lead's columns, or ''."""
     for key in WEBSITE_FIELDS:
         if fields.get(key) and domain_from(fields[key]):
             return domain_from(fields[key])
+    for key, value in fields.items():
+        lowered = str(key).lower()
+        if ('website' in lowered or lowered.endswith('_domain')) and not any(w in lowered for w in NOT_THEIR_SITE):
+            if domain_from(value):
+                return domain_from(value)
+    return ''
+
+
+def website_for(contact):
+    """The company website of a lead: a website column, else the email domain
+    when it is a company domain."""
+    found = website_from_fields(loads(contact['fields']))
+    if found:
+        return found
     domain = contact['email'].rsplit('@', 1)[-1].lower()
     if domain in FREE_PROVIDERS or domain in DISPOSABLE:
         return ''
     return domain
+
+
+# -- addresses a company publishes on its own website --------------------------------------
+PAGE_EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,24}')
+HREF_RE = re.compile(r'href\s*=\s*["\']([^"\'#]+)', re.IGNORECASE)
+CONTACT_WORDS = ('contact', 'get-in-touch', 'getintouch', 'enquir', 'inquir', 'reach-us', 'about', 'book')
+NOT_AN_ADDRESS = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.css', '.js', '.ico', '.pdf')
+PLACEHOLDER_DOMAINS = ('example.com', 'example.org', 'example.net', 'domain.com', 'yourdomain', 'yoursite',
+                       'website.com', 'company.com', 'mysite.com', 'email.com', 'sentry.io', 'sentry-next',
+                       'wixpress.com', 'godaddy.com', 'squarespace.com', 'wordpress.com', 'ingest.sentry')
+
+
+def _cloudflare(hexstr):
+    """Cloudflare hides addresses as hex, XOR-ed with the first byte."""
+    try:
+        key = int(hexstr[:2], 16)
+        return ''.join(chr(int(hexstr[i:i + 2], 16) ^ key) for i in range(2, len(hexstr) - 1, 2))
+    except ValueError:
+        return ''
+
+
+def emails_in_page(page):
+    """Addresses written on a web page: mailto links, plain text, Cloudflare-protected
+    and "name [at] site [dot] com" forms."""
+    from urllib.parse import unquote
+    text = html_lib.unescape(page)
+    text = re.sub(r'\s*[\[(]\s*at\s*[\])]\s*', '@', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s*[\[(]\s*dot\s*[\])]\s*', '.', text, flags=re.IGNORECASE)
+    found = [_cloudflare(h) for h in re.findall(r'data-cfemail=["\']([0-9a-fA-F]+)', page)]
+    found += [_cloudflare(h) for h in re.findall(r'/cdn-cgi/l/email-protection#([0-9a-fA-F]+)', page)]
+    found += re.findall(r'mailto:([^"\'?>\s]+)', text, flags=re.IGNORECASE)
+    found += PAGE_EMAIL_RE.findall(text)
+    out = []
+    for raw in found:
+        email = contacts.normalize_email(unquote(raw or ''))
+        if not email or email in out or email.endswith(NOT_AN_ADDRESS):
+            continue
+        domain = email.split('@', 1)[1]
+        if any(p in domain for p in PLACEHOLDER_DOMAINS) or contacts.is_role_address(email):
+            continue
+        out.append(email)
+    return out
+
+
+def _contact_pages(base_url, page, limit=2):
+    host = (urlparse(base_url).hostname or '').removeprefix('www.')
+    links = []
+    for href in HREF_RE.findall(page):
+        url = urljoin(base_url, html_lib.unescape(href.strip())).split('#')[0]
+        parsed = urlparse(url)
+        if parsed.scheme not in ('http', 'https') or (parsed.hostname or '').removeprefix('www.') != host:
+            continue
+        path = parsed.path.lower()
+        if any(w in path for w in CONTACT_WORDS) and not path.endswith(NOT_AN_ADDRESS) and url not in links:
+            links.append(url)
+    links.sort(key=lambda u: 0 if 'contact' in urlparse(u).path.lower() else 1)
+    return links[:limit]
+
+
+def _own(email, domain):
+    email_domain = email.split('@', 1)[1]
+    return email_domain == domain or email_domain.endswith('.' + domain) or domain.endswith('.' + email_domain)
+
+
+def site_emails(db, address):
+    """Addresses a company publishes on its own site: the home page and up to two contact or
+    about pages. Cached for 30 days.
+    Returns {'domain', 'emails': [{'email', 'page', 'own_domain'}], 'pages'}."""
+    domain = domain_from(address)
+    if not domain:
+        raise ToolError('No website to read.')
+    key = f'emails:{domain}'
+    cached = db.one('SELECT * FROM site_cache WHERE domain = ?', key)
+    if cached is not None and now() - cached['fetched_at'] < SITE_CACHE_DAYS * 86400:
+        data = loads(cached['data'], default=None)
+        if data is None:
+            raise ToolError(cached['error'] or 'The site could not be read earlier.')
+        return data
+    page, error = None, ToolError(f'Could not reach {domain}.')
+    for start in (f'https://{domain}/', f'https://www.{domain}/', f'http://{domain}/'):
+        try:
+            url, page = _safe_get(start)
+            break
+        except ToolError as exc:
+            error = exc
+    if page is None:
+        db.run('INSERT INTO site_cache (domain, data, error, fetched_at) VALUES (?, NULL, ?, ?) '
+               'ON CONFLICT(domain) DO UPDATE SET data = NULL, error = excluded.error, fetched_at = excluded.fetched_at',
+               key, str(error), now() - (SITE_CACHE_DAYS - 1) * 86400)   # try again after a day
+        raise error
+    pages, found = [url], [(e, url) for e in emails_in_page(page)]
+    for link in _contact_pages(url, page):
+        try:
+            link_url, link_page = _safe_get(link)
+        except ToolError:
+            continue
+        pages.append(link_url)
+        found += [(e, link_url) for e in emails_in_page(link_page)]
+    emails, seen = [], set()
+    for email, where in found:
+        if email not in seen:
+            seen.add(email)
+            emails.append({'email': email, 'page': where, 'own_domain': _own(email, domain)})
+    emails.sort(key=lambda e: (not e['own_domain'], e['email'].split('@', 1)[1] not in FREE_PROVIDERS))
+    data = {'domain': domain, 'emails': emails[:10], 'pages': pages}
+    db.run("INSERT INTO site_cache (domain, data, error, fetched_at) VALUES (?, ?, '', ?) "
+           "ON CONFLICT(domain) DO UPDATE SET data = excluded.data, error = '', fetched_at = excluded.fetched_at",
+           key, json.dumps(data), now())
+    return data

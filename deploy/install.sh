@@ -103,7 +103,8 @@ else
   echo "$ADMIN_PASSWORD" | grep -Eq '^[A-Za-z0-9._@%+=:,-]{8,}$' || die "Password: at least 8 characters from letters, digits and . _ @ % + = : , -"
 
   PROXY_SECRET=$(rand 24)
-  BOUNCE_PASSWORD=$(rand 16)
+  # Not 32 hex characters: the mail server reads those as an app token and the login fails.
+  BOUNCE_PASSWORD=$(rand 12)
   HELLO_PASSWORD=$(rand 12)
   PUBLIC_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -n1 || true)
   PROJECT=$(echo "$BRAND_NAME" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')

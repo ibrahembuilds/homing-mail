@@ -16,7 +16,7 @@
     </select>
     <select name="kind">
       <option value="">Any source</option>
-      {% for value, label in (('campaign', 'Campaigns'), ('api', 'API'), ('agent', 'AI agent'), ('test', 'Tests')) %}
+      {% for value, label in (('campaign', 'Campaigns'), ('single', 'Written by you'), ('reply', 'Replies'), ('api', 'API'), ('agent', 'AI agent'), ('test', 'Tests')) %}
       <option value="{{ value }}" {{ 'selected' if kind == value }}>{{ label }}</option>{% endfor %}
     </select>
     <button class="btn small">Filter</button>
@@ -28,7 +28,7 @@
     <tr>
       <td><a href="{{ url_for('ui.email_detail', mid=m.id) }}">{{ m.to_email }}</a></td>
       <td>{{ m.subject|truncate(60) }}</td>
-      <td class="small muted">{{ m.campaign_name or {'api': 'API', 'agent': 'AI agent', 'test': 'Test'}.get(m.kind, m.kind) }}</td>
+      <td class="small muted">{{ m.campaign_name or {'api': 'API', 'agent': 'AI agent', 'test': 'Test', 'single': 'Written by you', 'reply': 'Reply'}.get(m.kind, m.kind) }}</td>
       <td>{{ ui.badge(m.status, {'cancelled': 'skipped', 'queued': 'waiting'}.get(m.status)) }}</td>
       <td class="small">
         {% if m.opened_at %}{{ ui.badge('opened', 'opened' ~ ('' if m.human_open else ' (auto)')) }}{% endif %}

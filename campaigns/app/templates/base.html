@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="{{ 'nav-collapsed' if request.cookies.get('nav') == 'collapsed' }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -32,6 +32,9 @@
     <symbol id="i-pulse" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M3 12h4l2.5-6 5 12 2.5-6h4"/></symbol>
     <symbol id="i-clock" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/></g></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></symbol>
+    <symbol id="i-collapse" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 4h16v16H4zM9.5 4v16M16 10l-2 2 2 2"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 5v14M5 12h14"/></symbol>
     <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></symbol>
     <symbol id="i-pause" viewBox="0 0 24 24"><path fill="currentColor" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></symbol>
@@ -46,6 +49,7 @@
 </svg>
 <div class="shell">
   <aside class="side">
+    <button type="button" class="nav-toggle" id="nav-toggle" aria-label="Hide the menu" title="Hide the menu"><svg aria-hidden="true"><use href="#i-collapse"/></svg></button>
     <a class="brand" href="{{ url_for('ui.home') }}">
       {% if cfg.BRAND_LOGO_URL %}<img src="{{ cfg.BRAND_LOGO_URL }}" alt="">{% else %}<svg class="mark" aria-hidden="true"><use href="#i-logo"/></svg>{% endif %}
       <span>{{ brand }}</span>
@@ -53,35 +57,36 @@
     {% macro nav(endpoint, icon, label, keys, count=0, quiet=False) -%}
       <a class="nav {{ 'on' if active in keys }}" href="{{ url_for(endpoint) }}" title="{{ label }}"><svg aria-hidden="true"><use href="#i-{{ icon }}"/></svg><span class="nav-label">{{ label }}</span>{% if count %}<span class="count {{ 'quiet' if quiet }}">{{ count }}</span>{% endif %}</a>
     {%- endmacro %}
-    <form method="post" action="{{ url_for('ui.campaign_new') }}" class="side-cta"><input type="hidden" name="csrf" value="{{ csrf_token() }}"><button class="btn primary" title="New campaign"><svg aria-hidden="true"><use href="#i-plus"/></svg><span class="nav-label">New campaign</span></button></form>
     <nav class="nav-group" aria-label="Main">
       {{ nav('ui.home', 'home', 'Home', ('home',), pending_count) }}
       {{ nav('ui.agent_home', 'spark', 'AI agent', ('agent',)) }}
-      {{ nav('ui.campaigns', 'send', 'Campaigns', ('campaigns',)) }}
+      {{ nav('ui.offers_page', 'target', 'Offers', ('offers',)) }}
       {{ nav('ui.leads', 'users', 'Leads', ('leads', 'lists', 'finder')) }}
+      {{ nav('ui.campaigns', 'send', 'Campaigns', ('campaigns',)) }}
       {{ nav('ui.inbox', 'inbox', 'Inbox', ('inbox',), inbox_unread) }}
       {{ nav('ui.calendar', 'calendar', 'Calendar', ('calendar',), tasks_due, True) }}
       {{ nav('ui.analytics', 'chart', 'Analytics', ('analytics', 'emails')) }}
     </nav>
-    <nav class="nav-group setup" aria-label="Setup">
-      {% if is_admin %}{{ nav('ui.accounts', 'mail', 'Email accounts', ('accounts',)) }}{% endif %}
+    {% set setup_keys = ('accounts', 'health', 'domains', 'team', 'settings') %}
+    <details class="nav-group setup" aria-label="Setup" {{ 'open' if active in setup_keys }}>
+      <summary class="nav"><svg aria-hidden="true"><use href="#i-gear"/></svg><span class="nav-label">Setup</span></summary>
+      {% if is_admin %}{{ nav('ui.settings', 'gear', 'Settings', ('settings',)) }}
+      {{ nav('ui.accounts', 'mail', 'Email accounts', ('accounts',)) }}
+      {{ nav('ui.domains', 'globe', 'Domain & DNS', ('domains',)) }}{% endif %}
       {{ nav('ui.health_page', 'pulse', 'Sending health', ('health',)) }}
-      {% if is_admin %}
-      {{ nav('ui.domains', 'globe', 'Domain & DNS', ('domains',)) }}
-      {{ nav('ui.team', 'users', 'Team', ('team',)) }}
-      {{ nav('ui.settings', 'gear', 'Settings', ('settings',)) }}
-      {% endif %}
+      {% if is_admin %}{{ nav('ui.team', 'users', 'Team', ('team',)) }}{% endif %}
       {% if cfg.MAIL_SERVER %}
-      <a class="nav" href="{{ cfg.WEB_ADMIN }}" title="Mail admin"><svg aria-hidden="true"><use href="#i-server"/></svg><span class="nav-label">Mail admin</span></a>
       <a class="nav" href="{{ cfg.WEB_WEBMAIL }}" title="Webmail"><svg aria-hidden="true"><use href="#i-mail"/></svg><span class="nav-label">Webmail</span></a>
+      <a class="nav" href="{{ cfg.WEB_ADMIN }}" title="Mail admin"><svg aria-hidden="true"><use href="#i-server"/></svg><span class="nav-label">Mail admin</span></a>
       {% endif %}
-    </nav>
+    </details>
     <div class="foot">
       {% if me %}<span class="me nav-label" title="{{ me.email }} · {{ me.role }}">{{ me.name or me.email }}<span class="role">{{ me.role }} · v{{ app_version }}</span></span>{% else %}<span class="mono">v{{ app_version }}</span>{% endif %}
       <form method="post" action="{{ url_for('ui.logout') }}"><input type="hidden" name="csrf" value="{{ csrf_token() }}"><button title="Sign out"><svg class="i" aria-hidden="true"><use href="#i-logout"/></svg><span class="nav-label">Sign out</span></button></form>
     </div>
   </aside>
   <main class="main">
+    <button type="button" class="nav-open" id="nav-open" aria-label="Show the menu" title="Show the menu"><svg aria-hidden="true"><use href="#i-list"/></svg>Menu</button>
     {% for category, message in get_flashed_messages(with_categories=true) %}
     <div class="flash {{ 'error' if category == 'error' }}" role="status">{{ message }}</div>
     {% endfor %}

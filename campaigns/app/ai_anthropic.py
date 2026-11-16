@@ -13,6 +13,7 @@ from .ai_common import ProviderError
 NAME = 'anthropic'
 LABEL = 'Anthropic'
 DEFAULT_MODEL = 'claude-opus-5-5'
+NATIVE_WEB_SEARCH = True    # Anthropic runs web search itself, only when the model decides to
 # Models that accept the server-side refusal fallback: when the model declines
 # a request for policy reasons the API re-runs it on a fallback model.
 FALLBACK_MODELS = ('claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5', 'claude-fable-5-2', 'claude-fable-5-1')

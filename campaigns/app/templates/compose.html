@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Write an email{% endblock %}
+{% block body %}
+<div class="head">
+  <div><h1>Write an email</h1>
+    <div class="sub">One email to one person, sent as a plain personal email (no tracking), which is what reaches the inbox best.</div></div>
+</div>
+
+<section class="card compose">
+  {% if not options %}
+  <div class="notice warn">There is no address to send from yet. Set one in <a href="{{ url_for('ui.settings') }}#sender">Settings → Sender</a> or connect an <a href="{{ url_for('ui.accounts') }}">email account</a>.</div>
+  {% endif %}
+  <form method="post">{{ ui.csrf() }}
+    <div class="compose-row"><label for="c-from">From</label>
+      <select id="c-from" name="sender">{% for o in options %}<option value="{{ o.key }}" {{ 'selected' if draft.sender == o.key }}>{{ o.name ~ ' <' ~ o.email ~ '>' if o.name else o.email }}</option>{% endfor %}</select></div>
+    <div class="compose-row"><label for="c-to">To</label>
+      <input id="c-to" type="email" name="to" value="{{ draft.to }}" placeholder="name@company.com" required autocomplete="off" {{ 'autofocus' if not draft.to }}>
+      {% if lead %}<a class="badge plain" href="{{ url_for('ui.lead', contact_id=lead.id) }}">{{ ui.lead_name(lead) }} · {{ lead.lead_status|replace('_', ' ') }}</a>{% endif %}</div>
+    <div class="compose-row"><label for="c-subject">Subject</label>
+      <input id="c-subject" type="text" name="subject" value="{{ draft.subject }}" maxlength="300" required {{ 'autofocus' if draft.to }}></div>
+    <div class="compose-body">
+      <textarea name="text" class="compose-text" rows="12" required placeholder="Write your message. Links become clickable." data-preview-url="{{ url_for('ui.compose_preview') }}" id="compose-text">{{ draft.text }}</textarea>
+      <div class="compose-preview"><div class="eyebrow">How they see it</div>
+        <div class="preview-head"><strong id="pv-subject">{{ draft.subject or 'Subject' }}</strong><span class="muted small">to <span id="pv-to">{{ draft.to or '…' }}</span></span></div>
+        <iframe id="compose-preview" sandbox="" title="Preview of the email"></iframe></div>
+    </div>
+    <div class="actions"><button class="btn primary" {{ 'disabled' if not options }}><svg aria-hidden="true"><use href="#i-send"/></svg>Send</button>
+      <span class="hint">Never sent to anyone on your do-not-email list.</span></div>
+  </form>
+</section>
+{% endblock %}

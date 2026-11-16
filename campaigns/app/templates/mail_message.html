@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}{{ message.subject }}{% endblock %}
+{% block body %}
+<div class="head">
+  <div><a class="back" href="{{ url_for('ui.mailbox', key=profile.key, folder=folder) }}">← {{ profile.email }} · {{ folder }}</a>
+    <h1 class="mail-subject">{{ message.subject }}</h1></div>
+</div>
+
+<section class="card mail-read">
+  <div class="mail-meta">
+    <div><strong>{{ message.from_name }}</strong> <span class="muted mono small">&lt;{{ message.from_email }}&gt;</span>
+      {% if lead %}<a class="badge plain" href="{{ url_for('ui.lead', contact_id=lead.id) }}">lead · {{ lead.lead_status|replace('_', ' ') }}</a>{% endif %}</div>
+    <div class="muted small">to {{ message.to }}{% if message.cc %} · cc {{ message.cc }}{% endif %} · {{ message.date|dt if message.date else '' }}</div>
+  </div>
+  <div class="mail-body">{{ message.text or '(this message has no text)' }}</div>
+  {% if message.attachments %}<div class="mail-files">{% for name in message.attachments %}<span class="attach-file"><svg aria-hidden="true"><use href="#i-clip"/></svg>{{ name }}</span>{% endfor %}<span class="hint">Open attachments in webmail.</span></div>{% endif %}
+</section>
+
+{% if folder != 'sent' and message.from_email %}
+<section class="card">
+  <h2>Reply from {{ profile.email }}</h2>
+  <form method="post" action="{{ url_for('ui.mailbox_reply', key=profile.key, folder=folder, uid=message.uid) }}">{{ ui.csrf() }}
+    <div class="field"><label for="reply-text" class="sr-only">Your reply</label>
+      <textarea id="reply-text" name="text" rows="6" required placeholder="Write your reply"></textarea></div>
+    <div class="actions"><button class="btn primary"><svg aria-hidden="true"><use href="#i-send"/></svg>Send reply</button>
+      <span class="hint">Goes in the same thread, to {{ message.reply_to }}.</span></div>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

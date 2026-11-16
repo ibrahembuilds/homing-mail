@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui with context %}
+{% block title %}Review emails · {{ c.name }}{% endblock %}
+{% block body %}
+<div class="head">
+  <div>
+    <div class="crumb"><a href="{{ url_for('ui.campaigns') }}">Campaigns</a> / <a href="{{ url_for('ui.campaign', campaign_id=c.id) }}">{{ c.name }}</a> /</div>
+    <h1>Review emails</h1>
+    <div class="sub"><strong id="rv-included">{{ counts.included }}</strong> of {{ counts.total }} leads get this email<span id="rv-out-note">{% if counts.left_out %} · {{ counts.left_out }} left out{% endif %}</span>. Click a lead to see their email; untick to leave them out.</div>
+  </div>
+  <div class="actions">
+    {% if c.ai_mode == 'own' and editable %}<a class="btn" href="{{ url_for('ui.campaign_each', campaign_id=c.id) }}">Edit the emails</a>{% endif %}
+    <a class="btn primary" href="{{ url_for('ui.campaign', campaign_id=c.id) }}#send">Back to the campaign</a>
+  </div>
+</div>
+
+<div class="review" id="review" data-include-url="{{ url_for('ui.campaign_review_include', campaign_id=c.id) }}">
+  <aside class="card review-list">
+    <form class="review-filter" method="get">
+      <input type="search" name="q" value="{{ q }}" placeholder="Search leads" aria-label="Search leads">
+      <input type="hidden" name="show" value="{{ show }}">
+    </form>
+    <nav class="segmented small-seg" aria-label="Show">
+      {% for key, label in (('', 'All'), ('in', 'Getting it'), ('out', 'Left out')) %}<a class="{{ 'on' if show == key }}" href="?show={{ key }}{{ '&q=' ~ q|urlencode if q }}">{{ label }}</a>{% endfor %}
+    </nav>
+    <ul class="review-items" id="review-items">
+      {% for r in rows %}
+      <li class="{{ 'on' if r.id == selected }} {{ 'left-out' if not r.included }}" data-lead="{{ r.id }}"
+          data-src="{{ url_for('ui.campaign_preview', campaign_id=c.id, contact=r.id, framed=1) }}">
+        <input type="checkbox" class="pick" {{ 'checked' if r.included }} {{ 'disabled' if not editable or r.status == 'sent' }}
+               aria-label="Send to {{ r.email }}" title="{{ 'Already sent' if r.status == 'sent' else 'Send this email to ' ~ r.email }}">
+        <button type="button" class="review-item">
+          <span class="ri-top"><strong>{{ r.name }}</strong>{% if r.status == 'sent' %}<span class="badge ok">sent</span>{% elif r.status == 'bounced' %}<span class="badge bad">bounced</span>{% endif %}</span>
+          <span class="ri-subject">{{ r.subject }}</span>
+          <span class="ri-start">{{ r.start }}</span>
+        </button>
+      </li>
+      {% else %}
+      <li class="review-empty">{{ 'No leads match.' if q or show else 'This campaign has no list yet.' }}</li>
+      {% endfor %}
+    </ul>
+    {% if pages > 1 %}{{ ui.pager(page, pages, total, 'leads') }}{% endif %}
+    {% if editable and counts.total %}
+    <form class="review-bulk" method="post" action="{{ url_for('ui.campaign_review_include', campaign_id=c.id) }}">{{ ui.csrf() }}
+      <button class="btn small ghost" name="action" value="all_in">Tick all</button>
+      <button class="btn small ghost" name="action" value="all_out" data-confirm="Leave everyone out? You can tick them back one by one.">Untick all</button>
+    </form>
+    {% endif %}
+  </aside>
+  <section class="card review-view">
+    {% if selected %}
+    <div class="review-bar">
+      <button type="button" class="btn small" id="rv-prev" aria-label="Previous lead">↑</button>
+      <button type="button" class="btn small" id="rv-next" aria-label="Next lead">↓</button>
+      <span class="hint">or use the arrow keys</span>
+      <a class="small" id="rv-open" href="{{ url_for('ui.campaign_preview', campaign_id=c.id, contact=selected, framed=1) }}" target="_blank" rel="noopener">Open in a new tab</a>
+    </div>
+    <iframe id="review-frame" sandbox="" title="The selected lead's email" src="{{ url_for('ui.campaign_preview', campaign_id=c.id, contact=selected, framed=1) }}"></iframe>
+    {% else %}
+    {{ ui.empty('Nothing to show', 'Choose a list on the campaign first.') }}
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

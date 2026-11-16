@@ -1,0 +1,16 @@
+<div class="eyebrow">Your offer</div>
+{% if offer %}
+<h3 class="offer-live-name">{{ offer.name }}{% if offer.is_default %} <span class="badge ok">default</span>{% endif %}</h3>
+{% if offer.summary %}<p class="offer-live-summary">{{ offer.summary }}</p>{% endif %}
+<dl class="offer-live-parts">
+  {% for key, label in (('audience', 'For'), ('problem', 'Fixes'), ('outcome', 'Result'), ('details', 'What they get'), ('proof', 'Proof'), ('case_studies', 'Case studies'), ('call_to_action', 'Next step')) %}
+  <div class="{{ 'not-yet' if not offer[key] }}"><dt>{{ label }}</dt><dd>{{ offer[key] or 'not yet' }}</dd></div>
+  {% endfor %}
+</dl>
+<a class="btn small" href="{{ url_for('ui.offers_page', edit=offer.id) }}#write">Edit by hand</a>
+{% else %}
+<p class="muted small">Nothing saved yet. Answer the assistant's questions; your offer appears here as soon as it is saved.</p>
+<dl class="offer-live-parts">
+  {% for label in ('For', 'Fixes', 'Result', 'Proof', 'Next step') %}<div class="not-yet"><dt>{{ label }}</dt><dd>not yet</dd></div>{% endfor %}
+</dl>
+{% endif %}

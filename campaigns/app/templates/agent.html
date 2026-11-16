@@ -1,13 +1,22 @@
 {% extends "base.html" %}
 {% import "macros.html" as ui with context %}
-{% block title %}AI agent{% endblock %}
+{% set is_offer = thread.kind == 'offer' %}
+{% block title %}{{ 'Offer assistant' if is_offer else 'AI agent' }}{% endblock %}
 {% block body %}
-<div class="head">
-  <div><h1>AI agent</h1>
-    <div class="sub">{% if configured %}{{ provider_label }}{% if model %} · <code>{{ model }}</code>{% endif %} ·
-      {{ 'sends wait for your approval' if require_approval else 'allowed to send without asking' }} · <a href="{{ url_for('ui.settings') }}#ai">change</a>
-      {% else %}Writes, checks and schedules campaigns for you.{% endif %}</div></div>
-  <form class="actions" method="post" action="{{ url_for('ui.agent_new') }}">{{ ui.csrf() }}<button class="btn">New conversation</button></form>
+<div class="head agent-head">
+  <div><h1>{{ 'Offer assistant' if is_offer else 'AI agent' }}</h1>
+    <div class="sub">{% if is_offer %}Answer a few short questions. Your offer builds up on the right.
+      {% elif configured %}{{ (model or provider_label)|replace('anthropic/', '')|replace('-', ' ')|replace('claude', 'Claude')|replace('opus', 'Opus')|replace('sonnet', 'Sonnet')|replace('haiku', 'Haiku') }} · {{ 'asks before sending' if require_approval else 'sends without asking' }} · <a href="{{ url_for('ui.settings') }}#ai">Settings</a>
+      {% else %}Researches your leads, finds their emails, writes and schedules campaigns.{% endif %}</div></div>
+  <div class="actions">
+    {% if not is_offer and threads %}<button type="button" class="btn" id="history-toggle" aria-expanded="false" aria-controls="history"><svg aria-hidden="true"><use href="#i-list"/></svg>Chats <span class="muted">{{ threads|length }}</span></button>{% endif %}
+    {% if is_offer and threads|length > 1 %}
+    <details class="menu"><summary class="btn">Earlier chats</summary>
+      <div class="menu-list">{% for t in threads %}<a class="{{ 'on' if t.id == thread.id }}" href="{{ url_for('ui.agent_thread', thread_id=t.id) }}">{{ t.title }}</a>{% endfor %}</div></details>
+    {% endif %}
+    {% if is_offer %}<a class="btn" href="{{ url_for('ui.offers_page') }}">All offers</a>{% endif %}
+    <form method="post" action="{{ url_for('ui.agent_new') }}">{{ ui.csrf() }}<input type="hidden" name="kind" value="{{ thread.kind }}"><button class="btn {{ '' if is_offer else 'primary' }}"><svg aria-hidden="true"><use href="#i-plus"/></svg>{{ 'Start over' if is_offer else 'New chat' }}</button></form>
+  </div>
 </div>
 
 {% if not configured %}
@@ -15,40 +24,71 @@
   Paste an OpenRouter or Anthropic API key in <a href="{{ url_for('ui.settings') }}#ai">Settings → AI agent</a>. The key stays on this server.</div>
 {% endif %}
 
-<div id="approvals-slot">{{ ui.approvals_box(approvals) }}</div>
+{% if not is_offer %}<div id="approvals-slot">{{ ui.approvals_box(approvals) }}</div>{% endif %}
 
-<div class="chat {{ 'solo' if threads|length <= 1 and not messages }}">
-  <div class="card threads" style="padding:10px">
-    {% for t in threads %}<a class="{{ 'on' if t.id == thread.id }}" href="{{ url_for('ui.agent_thread', thread_id=t.id) }}" title="{{ t.title }}">{{ t.title }}</a>{% endfor %}
-    {% if messages %}
-    <form method="post" action="{{ url_for('ui.agent_delete', thread_id=thread.id) }}" data-confirm="Delete this conversation?" style="margin-top:10px">{{ ui.csrf() }}<button class="btn small danger">Delete conversation</button></form>
+{% if is_offer %}
+<div class="offer-studio">
+{% else %}
+<div class="chat agent-chat" id="agent-chat">
+  <div class="card threads" id="history" hidden>
+    <div class="threads-head"><strong>Chats</strong><button type="button" class="btn small quiet" id="history-close" aria-label="Close the list">×</button></div>
+    {% for t in threads %}<a class="{{ 'on' if t.id == thread.id }}" href="{{ url_for('ui.agent_thread', thread_id=t.id) }}" title="{{ t.title }}">{{ t.title }}{% if t.status == 'running' %} <span class="dot-live" aria-label="working"></span>{% endif %}</a>{% endfor %}
+    {% if blocks %}
+    <form method="post" action="{{ url_for('ui.agent_delete', thread_id=thread.id) }}" data-confirm="Delete this conversation?">{{ ui.csrf() }}<button class="btn small quiet">Delete conversation</button></form>
     {% endif %}
   </div>
-  <div class="card">
+{% endif %}
+  <div class="card chat-card" id="chat" data-poll="{{ url_for('ui.agent_poll', thread_id=thread.id) }}"
+       data-stop="{{ url_for('ui.agent_stop', thread_id=thread.id) }}" data-retry="{{ url_for('ui.agent_retry', thread_id=thread.id) }}"
+       data-after="{{ last_user }}" data-status="{{ state.status }}">
     <div class="log" id="log">
-      {% for m in messages %}<div class="msg {{ m.kind }} {{ 'error' if m.error }}">{{ m.summary if m.kind == 'tool' else m.text }}</div>{% endfor %}
+      {% with blocks = blocks|selectattr('id', 'le', last_user)|list %}{% include "chat_blocks.html" %}{% endwith %}
+      <div id="turn">{% with blocks = blocks|selectattr('id', 'gt', last_user)|list %}{% include "chat_blocks.html" %}{% endwith %}</div>
     </div>
-    {% if not messages %}
+    <div class="live" id="live" {{ 'hidden' if state.status != 'running' }}>
+      <span class="dot-live" aria-hidden="true"></span><span id="activity">{{ state.activity or 'Thinking' }}</span>…
+      <button type="button" class="btn small quiet" id="stop"><svg aria-hidden="true"><use href="#i-stop"/></svg>Stop</button>
+    </div>
+    <div class="chat-error" id="chat-error" {{ 'hidden' if state.status != 'error' }}>
+      <span id="error-text">{{ state.error }}</span>
+      <button type="button" class="btn small" id="retry">Try again</button>
+    </div>
+    {% if not blocks %}
     <div class="chat-start" id="suggest">
       <div class="chat-hello">
-        <svg class="chat-hello-icon"><use href="#i-spark"/></svg>
-        <h2>What should we send?</h2>
-        <p class="muted">Attach a lead list with the <svg class="inline-i"><use href="#i-clip"/></svg> button, or pick a start below.</p>
+        <svg class="chat-hello-icon"><use href="#i-{{ 'target' if is_offer else 'spark' }}"/></svg>
+        {% if is_offer %}
+        <h2>What do you want to offer?</h2>
+        <p class="muted">Tell it in a sentence, or give your website. It asks a few short questions and saves the result.</p>
+        {% else %}
+        <h2>What should we work on?</h2>
+        <p class="muted">Attach a lead list with <svg class="inline-i"><use href="#i-clip"/></svg>, or start with one of these.</p>
+        {% endif %}
       </div>
       <div class="suggest">
-        <button type="button">Read my newest lead list and write a personal first email for each lead, using news about their company</button>
+        {% if is_offer %}
+        <button type="button">My website is </button>
+        <button type="button">I sell </button>
+        <button type="button">Look at my leads and suggest an offer that fits them</button>
+        {% else %}
+        <button type="button">Read my newest lead list, research each company and tell me who is worth emailing first</button>
+        <button type="button">Find the missing email addresses in my newest list</button>
+        <button type="button">Write a short first email for my newest list using my offer, and show me 3 samples</button>
         <button type="button">Show me the replies waiting for an answer and draft a reply to each</button>
-        <button type="button">How did my last campaign do, and what should I change next time?</button>
-        <button type="button">Which leads should I follow up with this week?</button>
+        {% endif %}
       </div>
     </div>
     {% endif %}
     <form class="composer" id="composer" data-url="{{ url_for('ui.agent_send', thread_id=thread.id) }}" data-upload="{{ url_for('ui.agent_upload', thread_id=thread.id) }}">
-      <label class="btn icon attach {{ 'disabled' if not configured }}" title="Attach leads (CSV or Excel)" aria-label="Attach leads (CSV or Excel)">
-        <input type="file" id="attach" accept=".csv,.tsv,.txt,.xlsx,.xlsm" hidden {{ 'disabled' if not configured }}><svg><use href="#i-clip"/></svg></label>
-      <textarea id="prompt" rows="1" placeholder="{{ 'Ask anything, or attach leads and say what to send them' if configured else 'Add an API key in Settings first' }}" {{ 'disabled' if not configured }} required></textarea>
-      <button class="btn primary" {{ 'disabled' if not configured }}><svg><use href="#i-send"/></svg>Send</button>
+      <div class="attached" id="attached" hidden><svg aria-hidden="true"><use href="#i-clip"/></svg><span id="attached-name"></span><button type="button" id="attached-remove" aria-label="Remove the file">×</button></div>
+      <div class="composer-row">
+        {% if not is_offer %}<label class="btn icon attach {{ 'disabled' if not configured }}" title="Attach leads (CSV or Excel)" aria-label="Attach leads (CSV or Excel)">
+          <input type="file" id="attach" accept=".csv,.tsv,.txt,.xlsx,.xlsm" hidden {{ 'disabled' if not configured }}><svg><use href="#i-clip"/></svg></label>{% endif %}
+        <textarea id="prompt" rows="1" placeholder="{{ ('Tell it what you sell, or answer its question' if is_offer else 'Ask anything, or attach leads') if configured else 'Add an API key in Settings first' }}" {{ 'disabled' if not configured }}></textarea>
+        <button class="btn primary" {{ 'disabled' if not configured }}><svg><use href="#i-send"/></svg>Send</button>
+      </div>
     </form>
   </div>
+  {% if is_offer %}<aside class="card offer-live" id="offer-live" data-url="{{ url_for('ui.offers_card') }}">{% include "offer_card.html" %}</aside>{% endif %}
 </div>
 {% endblock %}

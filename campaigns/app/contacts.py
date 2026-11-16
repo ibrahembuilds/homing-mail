@@ -20,7 +20,12 @@ ROLE_LOCALPARTS = {
 EMAIL_HEADERS = ('email', 'e-mail', 'email address', 'e-mail address', 'mail', 'emailaddress')
 FIRST_HEADERS = ('first name', 'firstname', 'first', 'fname', 'given name', 'givenname')
 LAST_HEADERS = ('last name', 'lastname', 'last', 'lname', 'surname', 'family name')
-NAME_HEADERS = ('name', 'full name', 'fullname', 'contact name')
+NAME_HEADERS = ('name', 'full name', 'fullname', 'contact name', 'contact', 'contact person', 'decision maker',
+                'person', 'owner name', 'lead name')
+PLAIN_NAME_HEADERS = ('name', 'full name', 'fullname', 'contact name')
+TITLES = {'mr', 'mrs', 'ms', 'miss', 'mx', 'dr', 'prof', 'sir', 'dame', 'rev'}
+ROLE_WORDS = {'co-founder', 'cofounder', 'founder', 'owner', 'director', 'manager', 'ceo', 'md', 'head', 'principal',
+              'partner', 'proprietor', 'tutor', 'coordinator', 'administrator', 'lead', 'teacher'}
 
 MAX_ROWS = 500_000
 
@@ -76,6 +81,30 @@ def _delimiter(text):
         if used_on > best_lines:
             best, best_lines = candidate, used_on
     return best
+
+
+def split_name(value):
+    """A name cell -> (first_name, last_name) fit for "Hi {{first_name}}".
+
+    'Dr Jane Smith' -> ('Jane', 'Smith'); 'Stephen Beach; Simon Horsley' -> ('Stephen and Simon', '');
+    'Helena (surname not found); co-founder Alice' -> ('Helena and Alice', '')."""
+    text = re.sub(r'\([^)]*\)', ' ', str(value or ''))
+    people = [p for p in re.split(r'\s*(?:;|/|&|\+|and)\s*', text, flags=re.IGNORECASE) if p.strip()]
+    firsts, last = [], ''
+    for person in people:
+        words = [w.strip(',.') for w in person.split()]
+        words = [w for w in words if w and w.lower() not in TITLES and w.lower() not in ROLE_WORDS
+                 and not w.lower().startswith(('co-', 'http')) and '@' not in w]
+        if not words:
+            continue
+        firsts.append(words[0][:1].upper() + words[0][1:])
+        if len(people) == 1 and len(words) > 1:
+            last = ' '.join(words[1:])
+    if not firsts:
+        return '', ''
+    if len(firsts) == 1:
+        return firsts[0], last
+    return ', '.join(firsts[:-1]) + ' and ' + firsts[-1], ''
 
 
 def parse_upload(filename, data):
@@ -159,11 +188,15 @@ def parse_table(table):
             if hits > best_hits:
                 best, best_hits = col, hits
         email_col = best
-    if email_col is None:
+    if email_col is None and not (has_header and any(headers)):
         return [], {'email': None, 'fields': []}
+    # Without an email column, rows can still become leads that need an email
+    # (a list of businesses with their websites, for example).
 
     first_col, last_col, name_col = find(FIRST_HEADERS), find(LAST_HEADERS), find(NAME_HEADERS)
-    special = {email_col, first_col, last_col, name_col}
+    special = {email_col, first_col, last_col}
+    if name_col is not None and headers[name_col] in PLAIN_NAME_HEADERS:
+        special.add(name_col)          # other name columns (decision maker...) are also kept as they are
     extra_cols = [(i, _slug(h)) for i, h in enumerate(headers) if h and i not in special]
 
     rows = []
@@ -172,14 +205,12 @@ def parse_table(table):
             return raw[i].strip() if i is not None and i < len(raw) else ''
         first_name, last_name = cell(first_col), cell(last_col)
         if not first_name and not last_name and name_col is not None:
-            parts = cell(name_col).split(None, 1)
-            first_name = parts[0] if parts else ''
-            last_name = parts[1] if len(parts) > 1 else ''
+            first_name, last_name = split_name(cell(name_col))
         fields = {key: cell(i) for i, key in extra_cols if cell(i)}
         rows.append({'email': cell(email_col), 'first_name': first_name,
                      'last_name': last_name, 'fields': fields})
     columns = {
-        'email': headers[email_col] or f'column {email_col + 1}',
+        'email': (headers[email_col] or f'column {email_col + 1}') if email_col is not None else None,
         'first_name': headers[first_col] if first_col is not None else (headers[name_col] if name_col is not None else None),
         'last_name': headers[last_col] if last_col is not None else None,
         'fields': [key for _, key in extra_cols],

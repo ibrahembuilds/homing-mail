@@ -59,6 +59,7 @@
     </div>
   </div>
   <form class="actions" method="post" action="{{ url_for('ui.campaign_state', campaign_id=c.id) }}">{{ ui.csrf() }}
+    {% if c.list_id %}<a class="btn" href="{{ url_for('ui.campaign_review', campaign_id=c.id) }}"><svg aria-hidden="true"><use href="#i-mail"/></svg>Review emails</a>{% endif %}
     {% if c.status == 'pending_approval' %}<button class="btn primary" name="action" value="approve">Approve and schedule</button><button class="btn" name="action" value="unschedule">Back to draft</button>{% endif %}
     {% if c.status == 'sending' %}<button class="btn" name="action" value="pause">Pause</button>{% endif %}
     {% if c.status == 'paused' %}<button class="btn primary" name="action" value="resume">Resume</button>{% endif %}
@@ -147,7 +148,7 @@
   <nav class="steps" aria-label="Campaign steps" data-tabs>
     <a href="#details" class="{{ 'done' if c.list_id and c.subject }}"><b>1</b>Details</a>
     <a href="#message" class="{{ 'done' if c.html or c.text }}"><b>2</b>Email</a>
-    <a href="#ai" class="{{ 'done' if c.ai_mode }}"><b>3</b>AI personalisation</a>
+    <a href="#ai" class="{{ 'done' if c.ai_mode }}"><b>3</b>Personal emails</a>
     <a href="#followups" class="{{ 'done' if steps }}"><b>4</b>Sequence</a>
     <a href="#check" class="{{ 'done' if report and report.verdict == 'good' }}"><b>5</b>Check</a>
     <a href="#send"><b>6</b>Schedule & send</a>
@@ -169,6 +170,20 @@
         {% if not lists %}<div class="hint"><a href="{{ url_for('ui.lists') }}">Upload leads first.</a></div>{% endif %}
       </div>
     </div>
+    <div class="field"><label for="subject">Subject{% if c.subject_b %} A{% endif %}</label><input id="subject" type="text" name="subject" value="{{ c.subject }}" maxlength="300" placeholder="Quick question about {{ '{{company}}' }}"></div>
+    <details class="more" {{ 'open' if c.subject_b or c.preheader }}><summary>More options <span class="hint">test a second subject, preview text</span></summary>
+    <details class="ab-test" open>
+      <summary><svg><use href="#i-spark"/></svg>Test a second subject line <span class="hint">optional · the better one goes to the rest of the list</span></summary>
+      <div class="field"><label for="subject_b">Subject B <span class="hint">empty = no test</span></label><input id="subject_b" type="text" name="subject_b" value="{{ c.subject_b }}" maxlength="300" placeholder="{{ '{{first_name}}' }}, an idea for {{ '{{company}}' }}"></div>
+      <div class="row">
+        <div class="field"><label for="ab_percent">Test on <span class="hint">% of the list, half each</span></label><input id="ab_percent" type="number" name="ab_percent" min="5" max="50" value="{{ c.ab_percent }}"></div>
+        <div class="field"><label for="ab_wait_hours">Then wait <span class="hint">hours for opens and replies</span></label><input id="ab_wait_hours" type="number" name="ab_wait_hours" min="0" max="72" step="any" value="{{ c.ab_wait_hours|round(1)|replace('.0', '') }}"></div>
+      </div>
+      <p class="hint" style="margin:0">The winner is the subject with more replies, then more opens. Everyone else gets it once the wait is over.{% if c.ai_mode in ('full', 'own') %} <strong>Not used while each lead gets their own email and subject.</strong>{% endif %}</p>
+    </details>
+    <div class="field" ><label for="preheader">Preview text <span class="hint">shown after the subject in most inboxes, optional</span></label><input id="preheader" type="text" name="preheader" value="{{ c.preheader }}" maxlength="300"></div>
+    </details>
+    <details class="more sender-box" {{ 'open' if not (c.from_email or settings.from_email) }}><summary>From <strong>{{ c.from_name or settings.from_name or '' }} &lt;{{ c.from_email or settings.from_email or 'not set' }}&gt;</strong>{% if chosen_accounts %} · rotating {{ chosen_accounts|length }} account{{ 's' if chosen_accounts|length != 1 }}{% endif %} <span class="hint">change</span></summary>
     <div class="row">
       <div class="field"><label for="from_name">From name</label><input id="from_name" type="text" name="from_name" value="{{ c.from_name }}" maxlength="120"></div>
       <div class="field"><label for="from_email">From address</label><input id="from_email" type="email" name="from_email" value="{{ c.from_email }}" placeholder="{{ settings.from_email or 'you@yourdomain.com' }}"></div>
@@ -189,17 +204,7 @@
       <p class="hint" style="margin:0">Emails go from the From address above through this server. <a href="{{ url_for('ui.accounts', add=1) }}">Connect email accounts</a> (Google Workspace, Gmail, Zoho, any SMTP) to send from them and spread the volume.</p>
       {% endif %}
     </div>
-    <div class="field"><label for="subject">Subject{% if c.subject_b %} A{% endif %}</label><input id="subject" type="text" name="subject" value="{{ c.subject }}" maxlength="300" placeholder="Quick question about {{ '{{company}}' }}"></div>
-    <details class="ab-test" {{ 'open' if c.subject_b }}>
-      <summary><svg><use href="#i-spark"/></svg>Test a second subject line <span class="hint">optional · the better one goes to the rest of the list</span></summary>
-      <div class="field"><label for="subject_b">Subject B <span class="hint">empty = no test</span></label><input id="subject_b" type="text" name="subject_b" value="{{ c.subject_b }}" maxlength="300" placeholder="{{ '{{first_name}}' }}, an idea for {{ '{{company}}' }}"></div>
-      <div class="row">
-        <div class="field"><label for="ab_percent">Test on <span class="hint">% of the list, half each</span></label><input id="ab_percent" type="number" name="ab_percent" min="5" max="50" value="{{ c.ab_percent }}"></div>
-        <div class="field"><label for="ab_wait_hours">Then wait <span class="hint">hours for opens and replies</span></label><input id="ab_wait_hours" type="number" name="ab_wait_hours" min="0" max="72" step="any" value="{{ c.ab_wait_hours|round(1)|replace('.0', '') }}"></div>
-      </div>
-      <p class="hint" style="margin:0">The winner is the subject with more replies, then more opens. Everyone else gets it once the wait is over.{% if c.ai_mode == 'full' %} <strong>Not used while the AI rewrites the whole email, because the AI writes each subject itself.</strong>{% endif %}</p>
     </details>
-    <div class="field" style="margin:0"><label for="preheader">Preview text <span class="hint">shown after the subject in most inboxes, optional</span></label><input id="preheader" type="text" name="preheader" value="{{ c.preheader }}" maxlength="300"></div>
   </section>
 
   <section class="card" id="message" data-pane="message">
@@ -220,19 +225,39 @@
   </section>
 
   <section class="card" id="ai" data-pane="ai">
-    <div class="card-head"><h2 style="margin:0"><span class="section-num">3</span>AI personalisation <span class="hint" style="font-family:var(--body)">optional</span></h2>
-      {% if c.ai_mode and writing and writing.total %}<a class="small" href="{{ url_for('ui.campaign_written', campaign_id=c.id) }}">Review all {{ writing.total|num }}</a>{% endif %}</div>
-    <div class="choices">
-      <label class="choice"><input type="radio" name="ai_mode" value="" {{ 'checked' if not c.ai_mode }}> <span><strong>Off</strong><span class="hint">Everyone gets the message above, with merge tags filled in.</span></span></label>
-      <label class="choice"><input type="radio" name="ai_mode" value="line" {{ 'checked' if c.ai_mode == 'line' }}> <span><strong>A personal opening line for each lead</strong><span class="hint">The AI writes one or two sentences per lead from their details, placed where you put <code>{{ '{{ai_line}}' }}</code>. Recommended: the rest stays exactly as you wrote it.</span></span></label>
-      <label class="choice"><input type="radio" name="ai_mode" value="full" {{ 'checked' if c.ai_mode == 'full' }}> <span><strong>Rewrite the whole email for each lead</strong><span class="hint">Same offer and links, wording adapted to each lead. Review a few before sending.</span></span></label>
+    <div class="card-head"><h2 style="margin:0"><span class="section-num">3</span>Personal emails <span class="hint" style="font-family:var(--body)">optional</span></h2>
+      {% if c.ai_mode in ('line', 'full') and writing and writing.total %}<a class="small" href="{{ url_for('ui.campaign_written', campaign_id=c.id) }}">Review all {{ writing.total|num }}</a>{% endif %}</div>
+    <div class="choices" data-mode-choices>
+      <label class="choice"><input type="radio" name="ai_mode" value="" {{ 'checked' if not c.ai_mode }}> <span><strong>Same email for everyone</strong><span class="hint">Merge tags such as <code>{{ '{{first_name}}' }}</code> fill in each lead's details.</span></span></label>
+      <label class="choice"><input type="radio" name="ai_mode" value="own" {{ 'checked' if c.ai_mode == 'own' }}> <span><strong>A different email for each lead</strong><span class="hint">Take each lead's subject and message from columns of your file, or write each one yourself. Leads without one get the email above.</span></span></label>
+      <label class="choice"><input type="radio" name="ai_mode" value="line" {{ 'checked' if c.ai_mode == 'line' }}> <span><strong>AI writes a personal opening line</strong><span class="hint">One or two sentences per lead where you put <code>{{ '{{ai_line}}' }}</code>; the rest stays as you wrote it.</span></span></label>
+      <label class="choice"><input type="radio" name="ai_mode" value="full" {{ 'checked' if c.ai_mode == 'full' }}> <span><strong>AI rewrites the whole email for each lead</strong><span class="hint">Same offer and links, wording adapted to each lead.</span></span></label>
     </div>
+
+    <div class="mode-box" data-when-mode="own" {{ 'hidden' if c.ai_mode != 'own' }}>
+      {% if own %}<p class="own-count"><strong class="num">{{ own.own }}</strong> of <span class="num">{{ own.total }}</span> leads have their own email{% if own.own < own.total %}; the other {{ own.total - own.own }} get the email above{% endif %}.
+        {% if own.total %}<a href="{{ url_for('ui.campaign_each', campaign_id=c.id) }}">Edit each one</a> · <a href="{{ url_for('ui.campaign_review', campaign_id=c.id) }}">Review them all</a>{% endif %}</p>{% endif %}
+      {% if own_columns %}
+      <div class="row own-cols">
+        <div class="field"><label for="own_subject_col">Subject from column <span class="hint">empty = the subject above</span></label>
+          <select id="own_subject_col" name="own_subject_col"><option value="">(the subject above)</option>{% for col in own_columns %}<option value="{{ col }}" {{ 'selected' if col == own_guess[0] }}>{{ col }}</option>{% endfor %}</select></div>
+        <div class="field"><label for="own_body_col">Message from column</label>
+          <select id="own_body_col" name="own_body_col"><option value="">Choose a column</option>{% for col in own_columns %}<option value="{{ col }}" {{ 'selected' if col == own_guess[1] }}>{{ col }}</option>{% endfor %}</select></div>
+      </div>
+      <div class="actions"><button class="btn primary" name="action" value="own_columns">Fill each lead's email from these columns</button>
+        <button class="btn" name="action" value="own_draft">Start each from the email above, then edit</button></div>
+      {% elif c.list_id %}
+      <div class="actions"><button class="btn primary" name="action" value="own_draft">Start each from the email above, then edit</button></div>
+      {% else %}<p class="hint">Choose the list in step 1 first.</p>{% endif %}
+    </div>
+
+    <div class="mode-box" data-when-mode="line full" {{ 'hidden' if c.ai_mode not in ('line', 'full') }}>
     <div class="field"><label for="ai_instructions">What should the personal part focus on? <span class="hint">optional</span></label>
       <textarea id="ai_instructions" name="ai_instructions" rows="3" maxlength="4000" placeholder="Mention something specific about their company and connect it to how we cut their booking no-shows. Friendly, no flattery.">{{ c.ai_instructions }}</textarea></div>
     <label class="check"><input type="checkbox" name="ai_research" {{ 'checked' if c.ai_research }}> <span>Read each lead's company website first <span class="hint">(from a website column, or their email domain). Facts come from the site, not guesses.</span></span></label>
-    <label class="check"><input type="checkbox" name="ai_news" {{ 'checked' if c.ai_news }}> <span>Search the latest news about each lead's company <span class="hint">(Google News, last 60 days, from a company column). The AI mentions a headline only when it clearly matches the company. Free.</span></span></label>
+    <label class="check"><input type="checkbox" name="ai_news" {{ 'checked' if c.ai_news }}> <span>Search the latest news about each lead's company <span class="hint">(Google News, last 60 days). Mentioned only when it clearly matches the company. Free.</span></span></label>
     {% if not ai_ready %}<div class="notice warn" style="margin-top:10px">Add an OpenRouter or Anthropic key in <a href="{{ url_for('ui.settings') }}#ai">Settings → AI</a> to use AI writing.</div>{% endif %}
-    {% if c.ai_mode %}
+    {% if c.ai_mode in ('line', 'full') %}
       <div class="actions" style="margin-top:6px">
         <button class="btn" name="action" value="ai_preview" {{ 'disabled' if not ai_ready }}><svg><use href="#i-spark"/></svg>Save and try on 3 leads</button>
         <button class="btn" name="action" value="ai_all" {{ 'disabled' if not ai_ready }}>Write all now</button>
@@ -256,7 +281,8 @@
         {% if r.status == 'failed' %}<span style="color:var(--bad)">{{ r.error }}</span>
         {% elif c.ai_mode == 'line' %}{{ r.body }}{% else %}<strong>{{ r.subject }}</strong><div class="muted small" style="margin-top:4px">{{ r.body|striptags|truncate(300) }}</div>{% endif %}</div>
       {% endfor %}{% endif %}
-    {% endif %}
+    {% else %}<p class="hint">Save to switch AI writing on, then try it on 3 leads.</p>{% endif %}
+    </div>
   </section>
 {% endif %}
 
@@ -353,9 +379,10 @@
       </div>
       <div>
         <h3>Send to the list</h3>
+        {% if c.list_id %}<p class="hint" style="margin:0 0 8px"><a href="{{ url_for('ui.campaign_review', campaign_id=c.id) }}">Review every email and choose who gets it</a></p>{% endif %}
         <label class="check"><input type="radio" name="when" value="now" checked> Start now</label>
         <label class="check start-at"><input type="radio" name="when" value="later"> Start at <input type="datetime-local" name="send_at" value="{{ scheduled_local or local_now }}" min="{{ local_now }}" style="width:auto;margin-left:6px"> <span class="hint">{{ settings.timezone }}</span></label>
-        <button class="btn primary" name="action" value="schedule" data-confirm="Send this campaign to the whole list?"><svg><use href="#i-send"/></svg>{{ 'Approve and schedule' if c.status == 'pending_approval' else 'Schedule campaign' }}</button>
+        <button class="btn primary" name="action" value="schedule" data-confirm="Send this campaign now to everyone ticked on the review page?"><svg><use href="#i-send"/></svg>{{ 'Approve and schedule' if c.status == 'pending_approval' else 'Schedule campaign' }}</button>
       </div>
     </div>
   </section>
@@ -364,7 +391,7 @@
   {% if steps_editable and steps %}<div class="actions" style="margin-bottom:18px"><button class="btn primary" name="action" value="save">Save follow-ups</button></div>{% endif %}
   <section class="card">
     <h2>What was sent</h2>
-    <p><strong>Subject template:</strong> {{ c.subject }}<br><strong>From:</strong> {% if chosen_accounts %}{% for a in accounts if a.row.id in chosen_accounts %}{{ a.row.email }} <span class="muted small">({{ a.sent_today }}/{{ a.row.daily_limit }} today)</span>{{ ', ' if not loop.last }}{% endfor %}{% else %}{{ c.from_name }} &lt;{{ c.from_email or settings.from_email }}&gt;{% endif %}{% if c.ai_mode %}<br><strong>AI writing:</strong> {{ ai_modes[c.ai_mode] }} · <a href="{{ url_for('ui.campaign_written', campaign_id=c.id) }}">see what it wrote</a>{% endif %}</p>
+    <p><strong>Subject template:</strong> {{ c.subject }}<br><strong>From:</strong> {% if chosen_accounts %}{% for a in accounts if a.row.id in chosen_accounts %}{{ a.row.email }} <span class="muted small">({{ a.sent_today }}/{{ a.row.daily_limit }} today)</span>{{ ', ' if not loop.last }}{% endfor %}{% else %}{{ c.from_name }} &lt;{{ c.from_email or settings.from_email }}&gt;{% endif %}{% if c.ai_mode == 'own' %}<br><strong>Personal emails:</strong> each lead's own · <a href="{{ url_for('ui.campaign_each', campaign_id=c.id) }}">see them</a>{% elif c.ai_mode %}<br><strong>AI writing:</strong> {{ ai_modes[c.ai_mode] }} · <a href="{{ url_for('ui.campaign_written', campaign_id=c.id) }}">see what it wrote</a>{% endif %}</p>
     <iframe class="preview" src="{{ url_for('ui.campaign_preview', campaign_id=c.id) }}" sandbox="" title="Email preview"></iframe>
   </section>
   {% if c.status in ('sending', 'paused', 'scheduled') %}

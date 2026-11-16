@@ -8,7 +8,7 @@
     <h1>{{ ui.lead_name(c) }}</h1>
     <div class="sub"><span class="mono">{{ c.email }}</span>{% if company %} · {{ company }}{% endif %}</div>
   </div>
-  <div class="actions">{{ ui.badge(c.lead_status) }}{% if suppressed %}{{ ui.badge('unsubscribed', 'not emailed: ' ~ suppressed.reason) }}{% endif %}
+  <div class="actions"><a class="btn small" href="{{ url_for('ui.compose', to=c.email) }}"><svg aria-hidden="true"><use href="#i-send"/></svg>Write an email</a>{{ ui.badge(c.lead_status) }}{% if suppressed %}{{ ui.badge('unsubscribed', 'not emailed: ' ~ suppressed.reason) }}{% endif %}
     {% if c.verify_status %}{{ ui.badge(c.verify_status, 'address ' ~ c.verify_status) }}{% endif %}</div>
 </div>
 
@@ -96,7 +96,13 @@
     </section>
     <section class="card">
       <h2>Details</h2>
-      {% for key, value in extra.items() %}<div class="small" style="margin-bottom:4px"><span class="muted">{{ key|replace('_', ' ') }}:</span> {{ value }}</div>{% else %}<p class="muted small">No other columns in the upload.</p>{% endfor %}
+      {% if brief.shown %}<dl class="facts">{% for key, value in brief.shown %}<div><dt>{{ key|replace('_', ' ')|capitalize }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
+      {% else %}<p class="muted small">No other columns in the upload.</p>{% endif %}
+      {% if extra|length > brief.shown|length %}
+      <details class="more"><summary>All {{ extra|length }} columns</summary>
+        {% for key, value in extra.items() %}<div class="fact-long"><div class="muted small">{{ key|replace('_', ' ')|capitalize }}</div><div class="clamp small">{{ value }}</div></div>{% endfor %}
+      </details>
+      {% endif %}
       {% if lists %}<p class="small" style="margin-top:10px"><span class="muted">In lists:</span> {% for l in lists %}<a href="{{ url_for('ui.list_detail', list_id=l.id) }}">{{ l.name }}</a>{{ ', ' if not loop.last }}{% endfor %}</p>{% endif %}
     </section>
   </aside>
